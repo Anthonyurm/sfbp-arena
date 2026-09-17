@@ -2207,9 +2207,49 @@ var Arena = class {
   }
 };
 
+// ../src/lib/names.ts
+function normalizeForFilter(raw) {
+  return raw.toLowerCase().replace(/[0@]/g, "o").replace(/[1!|]/g, "i").replace(/3/g, "e").replace(/4/g, "a").replace(/[5$]/g, "s").replace(/7/g, "t").replace(/[^a-z]/g, "");
+}
+var BLOCKED = [
+  "nigger",
+  "nigga",
+  "faggot",
+  "kike",
+  "spic",
+  "chink",
+  "tranny",
+  "retard",
+  "rape",
+  "nazi",
+  "hitler",
+  "cunt",
+  "whore",
+  "slut",
+  "pedo",
+  "kys"
+];
+var PATTERNS = BLOCKED.map((word) => new RegExp([...word].map((c) => `${c}+`).join("")));
+function isBlockedName(raw) {
+  const n = normalizeForFilter(raw);
+  if (n.length === 0) return false;
+  return PATTERNS.some((re) => re.test(n));
+}
+function cleanDisplayName(raw) {
+  const trimmed = (raw ?? "").trim().replace(/\s+/g, " ");
+  if (trimmed.length === 0) return null;
+  const stripped = trimmed.replace(/[^\w .-]/g, "").slice(0, 12);
+  if (stripped.trim().length < 2) return null;
+  if (isBlockedName(stripped)) return null;
+  return stripped;
+}
+function anonymousName() {
+  return `fish${Math.floor(Math.random() * 900 + 100)}`;
+}
+
 // src/room.ts
 var TICK_MS = 50;
-var PROTOCOL = 2;
+var PROTOCOL = 3;
 var IDLE_SHUTDOWN_MS = 6e4;
 var MAX_PLAYERS = 40;
 var ArenaRoom = class {
@@ -2245,12 +2285,12 @@ var ArenaRoom = class {
     const server = pair[1];
     server.accept();
     const url = new URL(request.url);
-    const name = (url.searchParams.get("name") ?? "fish").replace(/[^\w .-]/g, "").slice(0, 16);
+    const name = cleanDisplayName(url.searchParams.get("name")) ?? anonymousName();
     const id = crypto.randomUUID().slice(0, 8);
     this.clients.set(id, { id, ws: server, lastSeen: Date.now() });
     this.arena.join(id, name);
     this.start();
-    server.send(JSON.stringify({ type: "welcome", id, tickMs: TICK_MS, protocol: PROTOCOL }));
+    server.send(JSON.stringify({ type: "welcome", id, tickMs: TICK_MS, protocol: PROTOCOL, name }));
     server.addEventListener("message", (event) => {
       const entry = this.clients.get(id);
       if (entry) entry.lastSeen = Date.now();
@@ -2303,7 +2343,7 @@ var ArenaRoom = class {
             JSON.stringify({ type: "died", cause: entry.causeOfDeath, score: snap.you.score })
           );
         }
-        client.ws.send(JSON.stringify({ type: "s", ...snap }));
+        client.ws.send(JSON.stringify({ type: "s", n: this.clients.size, ...snap }));
       } catch {
       }
     }
@@ -2333,6 +2373,31 @@ function arenaNamespace(env) {
 function isNamespace(v) {
   return typeof v === "object" && v !== null && typeof v.idFromName === "function";
 }
+var ROOMS = ["atlantic", "pacific", "coral", "kelp", "trench", "lagoon", "reef", "current"];
+var SOFT_CAP = 24;
+var HARD_CAP = 40;
+async function pickRoom(arena) {
+  const counts = await Promise.all(
+    ROOMS.map(async (room) => {
+      try {
+        const res = await arena.get(arena.idFromName(room)).fetch("https://arena/status");
+        const body = await res.json();
+        return { room, players: Number(body.players) || 0 };
+      } catch {
+        return { room, players: HARD_CAP };
+      }
+    })
+  );
+  const open = counts.filter((c) => c.players < HARD_CAP);
+  if (open.length === 0) return null;
+  const busy = open.filter((c) => c.players > 0 && c.players < SOFT_CAP);
+  if (busy.length > 0) {
+    return busy.reduce((best, c) => c.players > best.players ? c : best);
+  }
+  const empty = open.find((c) => c.players === 0);
+  if (empty) return empty;
+  return open.reduce((best, c) => c.players < best.players ? c : best);
+}
 var index_default = {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -2345,6 +2410,12 @@ var index_default = {
         bindings: Object.keys(env)
       });
     }
+    if (url.pathname === "/join") {
+      if (!arena) return json({ error: "no durable object binding on this Worker" }, 503);
+      const pick = await pickRoom(arena);
+      if (!pick) return json({ full: true, rooms: ROOMS.length }, 503);
+      return json({ room: pick.room, players: pick.players });
+    }
     const match = url.pathname.match(/^\/room\/([a-z0-9-]{1,32})$/i);
     if (match) {
       if (!arena) {
@@ -2353,7 +2424,7 @@ var index_default = {
       const id = arena.idFromName(match[1].toLowerCase());
       return arena.get(id).fetch(request);
     }
-    return json({ error: "not found", try: ["/health", "/room/atlantic"] }, 404);
+    return json({ error: "not found", try: ["/health", "/join", "/room/atlantic"] }, 404);
   }
 };
 function json(body, status = 200) {
