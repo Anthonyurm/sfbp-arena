@@ -489,14 +489,36 @@ var TUNING = {
     { name: "bass", mass: 150, predators: true, schools: true, hunt: true, ambush: false },
     { name: "pike", mass: 400, predators: true, schools: true, hunt: true, ambush: false },
     { name: "gar", mass: 1e3, predators: true, schools: true, hunt: true, ambush: true },
-    {
-      name: "the pond opens",
-      mass: 2500,
-      predators: true,
-      schools: true,
-      hunt: true,
-      ambush: true
-    }
+    /**
+     * ROUND 40: it is fish all the way up.
+     *
+     * Anthony: "i also don't know what 'the pond opens' means. the upgrades to
+     * when i become like a minnow or bluegill are great."
+     *
+     * Exactly right, and the reason is that six of the seven ranks told you how
+     * big you were and the seventh told you something about the design of the
+     * game. A ladder is only a ladder if every rung is the same kind of thing.
+     *
+     * The masses above 2,500 are new rungs rather than a rename: the run is
+     * twenty-five minutes long since round 33, and it had NOTHING to reach for
+     * after minute three. These land at roughly 3, 5, 8, 12 and 24 minutes.
+     *
+     * They do not change the growth curve. `nextThreshold` feeds the per-bite
+     * falloff, but above a few hundred mass the per-bite CAP is what binds, so
+     * the falloff is not the number doing the work up here. Measured with
+     * `npm run pace` before and after: the same curve.
+     */
+    { name: "muskie", mass: 2500, predators: true, schools: true, hunt: true, ambush: true },
+    { name: "catfish", mass: 5e3, predators: true, schools: true, hunt: true, ambush: true },
+    { name: "sturgeon", mass: 9e3, predators: true, schools: true, hunt: true, ambush: true },
+    { name: "arapaima", mass: 14e3, predators: true, schools: true, hunt: true, ambush: true },
+    /**
+     * 18,000 and not 20,000. Hunger stops a good player at about 19,200 — a
+     * rank set above the ceiling is a rank nobody can ever reach, which is
+     * worse than not having one. Measured across 24 runs: the median survivor
+     * is at 19,581 by minute twenty.
+     */
+    { name: "leviathan", mass: 18e3, predators: true, schools: true, hunt: true, ambush: true }
   ],
   // ------------------------------------------------------------------ camera
   camera: {
@@ -1493,6 +1515,24 @@ var Camera = class {
   punchDuration = LIVE.camera.tierPunchMs / 1e3;
   viewport = { w: 1, h: 1, dpr: 1 };
   /**
+   * THE ASPECT THE SIMULATION USES, latched for the whole run.
+   *
+   * It used to be read live off `viewport`, and the engine marked a run
+   * UNVERIFIABLE whenever that ratio moved by more than 1e-9, with a comment
+   * saying this was rare because "the game is a full-screen canvas with nothing
+   * to scroll". That is not true on a phone. Mobile Safari hides and shows its
+   * toolbar on its own, and every time it does, the viewport height changes and
+   * the run silently stops being eligible for the leaderboard — which is why
+   * short runs reached the board and long ones never did.
+   *
+   * The director only uses the aspect for the spawn ring and the cull radius,
+   * both of which sit OFF SCREEN. Holding it still for a run costs nothing a
+   * player can see and makes every run checkable. Rendering is unaffected:
+   * `drawViewWidth` and `scale` still read the real viewport, so the picture
+   * always fits the window it is in.
+   */
+  simAspect = LIVE.camera.referenceAspect;
+  /**
    * WHERE THE CAMERA IS DRAWN, as opposed to where the simulation has put it.
    *
    * `step` runs at the fixed simulation rate; the renderer runs at the display
@@ -1561,6 +1601,7 @@ var Camera = class {
     this.drawViewWidth = this.drawViewHeight * (this.viewport.w / this.viewport.h);
   }
   reset(x, y, mass) {
+    if (this.viewport.h > 0) this.simAspect = this.viewport.w / this.viewport.h;
     this.x = x;
     this.y = y;
     this.viewHeight = this.targetViewHeight(mass);
@@ -1635,7 +1676,7 @@ var Camera = class {
     return this.viewport.h / this.viewHeight;
   }
   get viewWidth() {
-    return this.viewHeight * (this.viewport.w / this.viewport.h);
+    return this.viewHeight * this.simAspect;
   }
   get halfDiagonal() {
     const w = this.viewWidth / 2;
@@ -1740,7 +1781,6 @@ function clampDepth(pos, radius) {
 }
 
 // src/game/director.ts
-var VISITORS = ["a sturgeon", "something old", "a shadow", "the long one", "a wanderer"];
 function bandRange(band) {
   const b = LIVE.ocean.bands;
   if (band === 0 /* Surface */) return [0, b.surface];
@@ -2119,7 +2159,7 @@ var Director = class _Director {
     e.homeY = y;
     e.speedRatio *= 0.75;
     e.shape = 4;
-    return VISITORS[ctx.rng.int(0, VISITORS.length - 1)];
+    return "visitor";
   }
   /** Opening water: a few bodies already in frame so play starts instantly. */
   seed(ctx) {
@@ -3043,7 +3083,8 @@ var POOL = [
   },
   (rng) => {
     const n = rng.int(2, 4);
-    return { id: "tier", text: `reach tier ${n + 1}`, target: n, read: (_p, tier) => tier };
+    const name = LIVE.tiers[n]?.name ?? `tier ${n + 1}`;
+    return { id: "tier", text: `become a ${name}`, target: n, read: (_p, tier) => tier };
   },
   (rng) => {
     const n = rng.int(45, 80);
@@ -3319,10 +3360,7 @@ var World = class {
     this.collide(dt);
     this.syncDirector(view);
     this.director.step(dt, this.dir);
-    if (this.director.visitorArrived) {
-      this.events.push({ type: "visitor", name: this.director.visitorArrived });
-      this.director.visitorArrived = null;
-    }
+    if (this.director.visitorArrived) this.director.visitorArrived = null;
     for (const done of updateObjectives(this.objectives, p, this.tier)) {
       this.events.push({ type: "objective", text: done.text });
     }
@@ -3530,6 +3568,7 @@ var Replayer = class {
   /** True once the log is exhausted or the fish is dead. */
   done = false;
   constructor(run) {
+    this.cam.simAspect = run.aspect;
     this.cam.viewport.w = run.aspect;
     this.cam.viewport.h = 1;
     this.cam.viewport.dpr = 1;
@@ -3770,7 +3809,7 @@ var Board = class {
 };
 
 // src/lib/build.ts
-var BUILD_ID = "r37-long-climb";
+var BUILD_ID = "r40-fish-all-the-way-up";
 
 // server/src/room.ts
 var TICK_MS = 50;
