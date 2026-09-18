@@ -1196,11 +1196,43 @@ var TUNING = {
     scoreBankWeight: 0.1,
     scoreChainWeight: 4,
     /**
-     * How many simulation steps of input a run records. 60Hz x 300s, so five
-     * minutes at one byte a step — 18KB, and a run longer than this stops
-     * recording and is marked unverifiable rather than silently truncated.
+     * How many simulation steps of input a run records, at 60Hz and one byte a
+     * step. A run longer than this stops recording and is marked unverifiable
+     * rather than silently truncated.
+     *
+     * ROUND 41: THIS IS WHY LONG RUNS NEVER REACHED THE BOARD.
+     *
+     * It was 18,000 — five minutes — chosen when a whole run was over in three.
+     * Round 33 made the climb twenty-five minutes long and did not touch this,
+     * so from that day every run past the five-minute mark was disqualified
+     * mid-play. Anthony's 318-second run was eighteen seconds over the line.
+     *
+     * That is the same mistake as the mobile-toolbar one in round 39, made
+     * somewhere else: a limit that was fine for the old game, left behind by a
+     * change to how long the game lasts. When the length of a run changes,
+     * everything measured in run-length has to be checked.
+     *
+     * 864,000 is FOUR HOURS, which is Anthony's call: "no limit, highest score
+     * wins". Nobody plays a browser game for four hours in one sitting, so in
+     * practice this is "as long as you like" with a number behind it, because a
+     * buffer has to have one.
+     *
+     * Measured rather than guessed, which matters because this is the number
+     * that decides whether a run can still be CHECKED:
+     *
+     *   30 minutes   108,000 steps    4.5s to replay    405KB as JSON
+     *   2 hours      432,000 steps     18s to replay    1.6MB as JSON
+     *   4 hours      864,000 steps     36s to replay    3.2MB as JSON
+     *
+     * Two things follow, and both are done rather than hoped for. The wire
+     * format is base64 now, not a JSON array of numbers — a third of the size,
+     * because a phone uploading three megabytes over a patchy connection is the
+     * part of this most likely to fail. And the Worker's CPU limit is raised
+     * from its 30-second default to the 5-minute maximum in wrangler.json,
+     * because 36 seconds of replay against a 30-second ceiling is a run that
+     * dies for being too good.
      */
-    inputLogSteps: 18e3
+    inputLogSteps: 864e3
   }
 };
 var LIVE = structuredClone(TUNING);
@@ -3639,11 +3671,49 @@ function fnv1a(s) {
 }
 var SIM_VERSION = fnv1a(JSON.stringify(LIVE));
 
+// src/lib/wire.ts
+var B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+var INDEX = (() => {
+  const t = new Int16Array(128).fill(-1);
+  for (let i = 0; i < B64.length; i++) t[B64.charCodeAt(i)] = i;
+  return t;
+})();
+function unpackBytes(text) {
+  const out = [];
+  let acc = 0;
+  let bits = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c === 61) break;
+    const v = c < 128 ? INDEX[c] : -1;
+    if (v < 0) throw new Error("not base64");
+    acc = acc << 6 | v;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out.push(acc >> bits & 255);
+    }
+  }
+  return out;
+}
+function readLog(value) {
+  if (typeof value === "string") {
+    try {
+      return unpackBytes(value);
+    } catch {
+      return null;
+    }
+  }
+  if (Array.isArray(value)) return value;
+  return null;
+}
+
 // server/src/board.ts
 var SIZE = 20;
 var MAX_STEPS = LIVE.run.inputLogSteps;
 var TOLERANCE = 0.02;
 var RATE_PER_MIN = 6;
+var STEPS_PER_MIN = 432e3;
 async function claimHash(claim) {
   const bytes = new TextEncoder().encode(`sfbp-name-claim:${claim}`);
   const digest = await crypto.subtle.digest("SHA-256", bytes);
@@ -3695,17 +3765,18 @@ var Board = class {
   cutoff() {
     return this.rows.length < SIZE ? 0 : this.rows[this.rows.length - 1]?.score ?? 0;
   }
-  limited(address, now) {
-    const seen = (this.recent.get(address) ?? []).filter((t) => now - t < 6e4);
-    seen.push(now);
+  limited(address, now, steps) {
+    const seen = (this.recent.get(address) ?? []).filter((e) => now - e.at < 6e4);
+    seen.push({ at: now, steps });
     this.recent.set(address, seen);
     if (this.recent.size > 500) {
       for (const [k, v] of this.recent) {
-        if (v.every((t) => now - t > 6e4)) this.recent.delete(k);
+        if (v.every((e) => now - e.at > 6e4)) this.recent.delete(k);
         if (this.recent.size <= 400) break;
       }
     }
-    return seen.length > RATE_PER_MIN;
+    if (seen.length > RATE_PER_MIN) return true;
+    return seen.reduce((n, e) => n + e.steps, 0) > STEPS_PER_MIN;
   }
   async submit(body, address, now) {
     await this.load();
@@ -3714,18 +3785,20 @@ var Board = class {
     const seed = Number(s.seed);
     const aspect = Number(s.aspect);
     const claimed = Number(s.claimed);
-    const inputLog = s.inputLog;
-    const boostLog = s.boostLog;
+    const inputLog = readLog(s.inputLog);
+    const boostLog = readLog(s.boostLog);
     if (!Number.isFinite(seed) || !Number.isFinite(claimed) || claimed <= 0) {
       return this.refuse("a run needs an ocean and a score");
     }
     if (!Number.isFinite(aspect) || aspect < 0.2 || aspect > 5)
       return this.refuse("impossible window");
-    if (!Array.isArray(inputLog) || !Array.isArray(boostLog)) return this.refuse("no input log");
+    if (!inputLog || !boostLog) return this.refuse("no input log");
     if (inputLog.length === 0) return this.refuse("empty run");
     if (inputLog.length > MAX_STEPS) return this.refuse("run too long to check");
     if (boostLog.length < inputLog.length + 7 >> 3) return this.refuse("input log is incomplete");
-    if (this.limited(address, now)) return this.refuse("too many runs too quickly");
+    if (this.limited(address, now, inputLog.length)) {
+      return this.refuse("too many runs too quickly");
+    }
     if (typeof s.version === "string" && s.version !== SIM_VERSION) {
       this.counts.stale++;
       return {
@@ -3809,7 +3882,7 @@ var Board = class {
 };
 
 // src/lib/build.ts
-var BUILD_ID = "r40-fish-all-the-way-up";
+var BUILD_ID = "r42-no-limit";
 
 // server/src/room.ts
 var TICK_MS = 50;
