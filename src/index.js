@@ -3605,6 +3605,11 @@ var SIZE = 20;
 var MAX_STEPS = LIVE.run.inputLogSteps;
 var TOLERANCE = 0.02;
 var RATE_PER_MIN = 6;
+async function claimHash(claim) {
+  const bytes = new TextEncoder().encode(`sfbp-name-claim:${claim}`);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
 function bestPerName(rows) {
   const best = /* @__PURE__ */ new Map();
   for (const r of rows) {
@@ -3620,6 +3625,8 @@ var Board = class {
   }
   storage;
   rows = [];
+  /** lowercased name -> hash of the claim that owns it. */
+  owners = {};
   loaded = false;
   /** address -> timestamps of recent submissions. Memory only; a restart forgives. */
   recent = /* @__PURE__ */ new Map();
@@ -3630,12 +3637,15 @@ var Board = class {
     refused: 0,
     tooLow: 0,
     stale: 0,
-    personalBest: 0
+    personalBest: 0,
+    taken: 0
   };
   async load() {
     if (this.loaded) return;
     const saved = await this.storage.get("rows");
     if (Array.isArray(saved)) this.rows = bestPerName(saved);
+    const owners = await this.storage.get("owners");
+    if (owners && typeof owners === "object") this.owners = owners;
     this.loaded = true;
   }
   async list() {
@@ -3691,9 +3701,22 @@ var Board = class {
       this.counts.tooLow++;
       return { ok: false, reason: "not a top score", cutoff: cut, board: this.rows };
     }
-    const mine = this.rows.find(
-      (r) => r.name.toLowerCase() === (cleanDisplayName(typeof s.name === "string" ? s.name : "") ?? "").toLowerCase()
-    );
+    const wanted = cleanDisplayName(typeof s.name === "string" ? s.name : "");
+    const claim = typeof s.claim === "string" && s.claim.length >= 16 ? s.claim : null;
+    const holder = claim ? await claimHash(claim) : null;
+    if (wanted) {
+      const owner = this.owners[wanted.toLowerCase()];
+      if (owner && owner !== holder) {
+        this.counts.taken++;
+        return {
+          ok: false,
+          reason: "that name belongs to someone else \u2014 pick another",
+          taken: true,
+          board: this.rows
+        };
+      }
+    }
+    const mine = this.rows.find((r) => r.name.toLowerCase() === (wanted ?? "").toLowerCase());
     if (mine && claimed <= mine.score) {
       this.counts.personalBest++;
       return { ok: false, reason: "your best run is still your best run", board: this.rows };
@@ -3718,7 +3741,7 @@ var Board = class {
         board: this.rows
       };
     }
-    const name = cleanDisplayName(typeof s.name === "string" ? s.name : "") ?? anonymousName();
+    const name = wanted ?? anonymousName();
     const row = {
       name,
       score: result.score,
@@ -3729,6 +3752,13 @@ var Board = class {
     this.rows.push(row);
     this.rows = bestPerName(this.rows);
     this.counts.verified++;
+    if (holder) {
+      const key = name.toLowerCase();
+      if (!this.owners[key]) {
+        this.owners[key] = holder;
+        await this.storage.put("owners", this.owners);
+      }
+    }
     await this.storage.put("rows", this.rows);
     const rank = this.rows.indexOf(row) + 1;
     return { ok: rank > 0, rank, score: result.score, board: this.rows };
