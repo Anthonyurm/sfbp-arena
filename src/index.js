@@ -1,4 +1,4 @@
-// ../src/game/tuning.ts
+// src/game/tuning.ts
 var TUNING = {
   // ------------------------------------------------------------------ ocean
   /**
@@ -320,10 +320,53 @@ var TUNING = {
      * which hunger undoes in under three seconds. That is what makes the
      * plateau a plateau rather than a staircase.
      */
-    gainSoftCapMass: 2500,
-    gainRatioExp: 0.45,
+    /**
+     * ROUND 33: THE RUN WAS OVER IN THREE MINUTES.
+     *
+     * Anthony, with a screenshot of mass 26,513 at 167 seconds: "i feel i grew
+     * too easily/fast — i want people to be able to play for 20-30 mins easy."
+     *
+     * The cause is in the two numbers below rather than in this one. Per-bite
+     * gain is capped at a FRACTION of your own mass, and that fraction was held
+     * flat all the way to mass 2,500 and then fell slowly. A gain proportional
+     * to your own size is compound interest: the time to double is constant, so
+     * the run is exponential and the last double takes as long as the first.
+     * Twelve doublings is all of it, and twelve doublings is three minutes.
+     *
+     * The soft cap now starts at 40 — a few seconds in — and the exponent below
+     * is steep enough that the fraction falls faster than you grow, which turns
+     * compound interest into a climb: each double takes longer than the last.
+     *
+     * The early game is untouched, and deliberately. Below a few hundred mass
+     * the cap never binds at all: what you can eat up there is small, so the
+     * gain is set by the PREY's size, not by this. Measured, the first minute
+     * is within a few percent of where it was — mass 408 at sixty seconds
+     * against 443 before. "Grow early, then flatten" is exactly what this is.
+     */
+    gainSoftCapMass: 40,
+    /**
+     * How fast the per-bite cap falls away as you grow. This is the number that
+     * sets how long a run is, and `npm run pace` is how it was chosen.
+     *
+     *   exp    5 min    10 min    20 min    30 min
+     *   0.45   36,577   43,186    33,263    45,080   (the ceiling, by minute 5)
+     *   0.75   12,998   34,433    50,645    54,663
+     *   0.95    4,914   12,055    22,655    32,336
+     *   1.10    3,076    6,382    12,105    15,798   (never gets anywhere)
+     *
+     * At 0.95 the fish Anthony grew in two minutes and forty-seven seconds
+     * takes about half an hour, and is still climbing at twenty minutes, which
+     * is the whole request.
+     */
+    gainRatioExp: 0.95,
     /** A meal is always worth something, however big you are. */
-    minGainRatio: 0.02
+    /**
+     * The floor under the cap. At 0.02 it took over above mass 1,600 and made
+     * the top of the game exponential again — a floor on a fraction of your own
+     * mass is compound interest wearing a different hat. It now only binds past
+     * about 100,000, which is well beyond where hunger stops you.
+     */
+    minGainRatio: 2e-4
   },
   decay: {
     /**
@@ -382,7 +425,30 @@ var TUNING = {
      * It is a plateau, not a spiral. A fish at the ceiling that keeps eating
      * holds its size; one that stops, shrinks, and that is legible.
      */
-    hungerPerSecond: 107e-6,
+    /**
+     * HUNGER SETS THE CEILING, so it has to move with the growth curve above.
+     *
+     * The ceiling is simply where income meets this: eat all you like, a fish
+     * this size cannot feed itself. At the old value that crossing was around
+     * 31,000, which a player reached in under three minutes. With per-bite gain
+     * now a small fraction of a large fish, the same number would have put the
+     * ceiling at about 3,200 — a wall you hit in five minutes and then sit
+     * against for twenty-five.
+     *
+     * Set so the ceiling lands just UNDER 20,370, which is the largest fish the
+     * black can hold and therefore the size past which nothing in the ocean can
+     * hurt you. `npm run late` asserts that growth stops while the black is
+     * still dangerous — there must be no size at which a player is invulnerable
+     * and simply swimming about — and at 1e-6 the plateau was 34,870, well
+     * inside safe water. Raising the black's monsters to meet it was tried
+     * first and killed every run: 0 of 24 got past 20,000, because the things
+     * that got bigger sat exactly where the new, slower climb spends its time.
+     *
+     * Measured with `npm run pace`, 24 runs: mass 2,500 at 3m16s, 6,000 at
+     * 6m12s, 12,000 at 10m42s, 20,000 at 24m02s, plateau about 19,200. Still
+     * climbing at twenty minutes, and the top of the climb is still hunted.
+     */
+    hungerPerSecond: 24e-7,
     hungerExp: 1.8
   },
   // ------------------------------------------------------------------- chain
@@ -423,7 +489,14 @@ var TUNING = {
     { name: "bass", mass: 150, predators: true, schools: true, hunt: true, ambush: false },
     { name: "pike", mass: 400, predators: true, schools: true, hunt: true, ambush: false },
     { name: "gar", mass: 1e3, predators: true, schools: true, hunt: true, ambush: true },
-    { name: "the pond opens", mass: 2500, predators: true, schools: true, hunt: true, ambush: true }
+    {
+      name: "the pond opens",
+      mass: 2500,
+      predators: true,
+      schools: true,
+      hunt: true,
+      ambush: true
+    }
   ],
   // ------------------------------------------------------------------ camera
   camera: {
@@ -621,6 +694,14 @@ var TUNING = {
      * holds 22,000s, which is about 40% of the screen of a fish big enough to
      * be down there.
      */
+    /**
+     * ROUND 33 tried raising the black's ceiling to 42,000, so that the bigger
+     * plateau the new growth curve allows would still be inside dangerous
+     * water. It killed every run: 0 of 24 got past mass 20,000, because the
+     * things that got bigger were sitting exactly where the new, slower climb
+     * now spends its time. The ceiling was brought down to meet the black
+     * instead — see `decay.hungerPerSecond`. These numbers are unchanged.
+     */
     apexMassByBand: [
       [0, 0],
       [0, 0],
@@ -726,7 +807,18 @@ var TUNING = {
     arenaMaxEntities: 2400,
     /** Rare visitors: something enormous crossing the deep, ignoring you. */
     visitorChance: 0.03,
-    visitorBand: [4, 9]
+    visitorBand: [4, 9],
+    /**
+     * How far out a visitor enters, in view half-diagonals, and how far above
+     * or below you it passes, in view heights. Both exist because of the same
+     * measurement: at `visitorBand` a visitor covers 70% to 105% of the
+     * screen's width, so it cannot be dodged on reaction — it has to arrive
+     * already visible, in a lane that is not yours. `cullRing` is 2.8, so the
+     * ring has to stay inside that or the visitor is deleted before it
+     * arrives.
+     */
+    visitorRing: [1.9, 2.4],
+    visitorLane: [0.55, 1]
   },
   // ---------------------------------------------------------------------- ai
   ai: {
@@ -874,6 +966,24 @@ var TUNING = {
      * as an empty screen even when the density budget is being met.
      */
     minEntityScreenPx: 8,
+    /**
+     * How fast a newly arrived fish fades up to full opacity, per second.
+     *
+     * `fade` is passed straight to `drawFish` as its alpha, so a fish whose
+     * fade is zero is drawn perfectly, in the right place, at the right size,
+     * and paints NOTHING. Solo, `ai.ts` ramps it every step and the number
+     * lived there as a literal. Online there is no local AI at all: the snapshot
+     * sync filled in every other field and left this one at the pool's zero, so
+     * the entire multiplayer ocean was invisible while every counter — snapshot,
+     * drawn, pool fails, on screen — reported a healthy sea. It cost four rounds.
+     *
+     * It is here, and not in either file, because two code paths need it and a
+     * number two paths need is a tuning number. See `scripts/visible-check.mjs`,
+     * which diffs a frame against the same frame with the entities removed, so
+     * "the fish paint no pixels" can never again be something only a person can
+     * see.
+     */
+    fadeInPerSecond: 1.8,
     /**
      * Whether the minimap marks large predators. Off by default: a map that
      * shows every threat undoes the offscreen-marker design, and in PvP it is
@@ -1033,7 +1143,15 @@ var TUNING = {
      * Long enough to ride out a tunnel or a handover; short enough that nobody
      * sits and stares at it.
      */
-    giveUpAfterMs: 6e3
+    giveUpAfterMs: 6e3,
+    /**
+     * How long the arena may send fish that never come near before the client
+     * decides it has lost track of where it is and puts itself back where the
+     * server says. See the watchdog in remote.ts — a player being eaten by fish
+     * they cannot see is in an unplayable run, and the cause matters less than
+     * getting them out of it.
+     */
+    lostSeconds: 2
   },
   run: {
     /** Death card appears over the still-running pond. Restart must beat 1s. */
@@ -1065,7 +1183,7 @@ var TUNING = {
 };
 var LIVE = structuredClone(TUNING);
 
-// ../src/game/mathx.ts
+// src/game/mathx.ts
 var TAU = Math.PI * 2;
 function clamp(v, lo, hi) {
   return v < lo ? lo : v > hi ? hi : v;
@@ -1089,7 +1207,7 @@ function turnToward(current, target, maxStep) {
   return target;
 }
 
-// ../src/game/player.ts
+// src/game/player.ts
 function scaledRate(mass, rate, k) {
   const m0 = LIVE.player.startMass;
   return rate * Math.pow(m0, 1 - k) * Math.pow(Math.max(1, mass), k);
@@ -1350,7 +1468,7 @@ var Player = class {
   }
 };
 
-// ../src/game/camera.ts
+// src/game/camera.ts
 function viewHeightFor(mass, zoom = LIVE.camera.defaultZoom) {
   const c = LIVE.camera;
   const base = c.viewHeightAtStart * Math.pow(mass / LIVE.player.startMass, c.viewMassExp);
@@ -1534,7 +1652,7 @@ var Camera = class {
   }
 };
 
-// ../src/game/types.ts
+// src/game/types.ts
 var Kind = {
   Crumb: 0,
   Fish: 1
@@ -1551,7 +1669,17 @@ var Role = {
   /** Starts still near the edge of view, strikes once. */
   Ambusher: 4,
   /** Lives above the waterline. Dives. Cannot be eaten at any size. */
-  Bird: 5
+  Bird: 5,
+  /**
+   * Something enormous crossing the deep, ignoring you.
+   *
+   * It has a role of its own because it was a Prowler, and the Prowler branch
+   * in ai.ts drifts toward a player who comes close. So the one fish in the
+   * game whose whole design is that it does NOT care about you was steering at
+   * you, at four to nine times your mass, with about a second of warning. It
+   * ended seven runs out of eight in the pacing harness.
+   */
+  Visitor: 6
 };
 var Threat = {
   Edible: 0,
@@ -1559,11 +1687,11 @@ var Threat = {
   Lethal: 2
 };
 
-// ../src/game/species.ts
+// src/game/species.ts
 var LETHAL_SPECIES = [2, 3, 4];
 var EDIBLE_SPECIES = [0, 1, 5];
 
-// ../src/game/ocean.ts
+// src/game/ocean.ts
 var BAND_NAMES = ["the surface", "the shallows", "the deep", "the black"];
 function depthFraction(y) {
   return clamp(y / LIVE.ocean.depth, 0, 1);
@@ -1611,7 +1739,7 @@ function clampDepth(pos, radius) {
   else if (pos.y > o.depth - radius) pos.y = o.depth - radius;
 }
 
-// ../src/game/director.ts
+// src/game/director.ts
 var VISITORS = ["a sturgeon", "something old", "a shadow", "the long one", "a wanderer"];
 function bandRange(band) {
   const b = LIVE.ocean.bands;
@@ -1974,17 +2102,21 @@ var Director = class _Director {
     const d = LIVE.director;
     const e = ctx.pool.spawn();
     if (!e) return null;
-    const p = this.spawnPoint(ctx, true);
-    if (!p) {
-      ctx.pool.release(e);
-      return null;
-    }
+    const side = ctx.rng.chance(0.5) ? 1 : -1;
+    const x = ctx.camX + side * ctx.viewHalfDiag * ctx.rng.range(d.visitorRing[0], d.visitorRing[1]);
+    const lane = ctx.rng.chance(0.5) ? 1 : -1;
+    const y = clamp(
+      ctx.camY + lane * ctx.viewHeight * ctx.rng.range(d.visitorLane[0], d.visitorLane[1]),
+      LIVE.ocean.depth * LIVE.ocean.bands.surface,
+      LIVE.ocean.depth
+    );
     const mass = Math.max(400, ctx.pmass * ctx.rng.range(d.visitorBand[0], d.visitorBand[1]));
-    this.init(e, ctx, p.x, p.y, mass, Role.Prowler);
+    this.init(e, ctx, x, y, mass, Role.Visitor);
     e.interest = 0;
     e.wanderTimer = 999;
-    e.wanderTarget = ctx.rng.chance(0.5) ? 0 : Math.PI;
+    e.wanderTarget = side > 0 ? Math.PI : 0;
     e.heading = e.wanderTarget;
+    e.homeY = y;
     e.speedRatio *= 0.75;
     e.shape = 4;
     return VISITORS[ctx.rng.int(0, VISITORS.length - 1)];
@@ -2005,7 +2137,7 @@ var Director = class _Director {
   }
 };
 
-// ../src/game/pool.ts
+// src/game/pool.ts
 function blank(id) {
   return {
     active: false,
@@ -2098,7 +2230,7 @@ var EntityPool = class {
   }
 };
 
-// ../src/game/rng.ts
+// src/game/rng.ts
 var Rng = class {
   s;
   constructor(seed = Date.now() >>> 0) {
@@ -2125,7 +2257,7 @@ var Rng = class {
   }
 };
 
-// ../src/game/spatialhash.ts
+// src/game/spatialhash.ts
 var SpatialHash = class {
   cell;
   cols;
@@ -2191,7 +2323,7 @@ var SpatialHash = class {
   }
 };
 
-// ../src/game/ai.ts
+// src/game/ai.ts
 function retarget(e, rng) {
   const a = LIVE.ai;
   e.wanderTimer = rng.range(a.wanderTurnMs[0], a.wanderTurnMs[1]) / 1e3;
@@ -2236,7 +2368,7 @@ function stepEntity(e, ctx) {
   e.py = e.y;
   e.speed = ctx.pspeed * e.speedRatio;
   e.phase += dt * (2.2 + e.speed * 4e-3);
-  if (e.fade < 1) e.fade = Math.min(1, e.fade + dt * 1.8);
+  if (e.fade < 1) e.fade = Math.min(1, e.fade + dt * LIVE.render.fadeInPerSecond);
   let target = e.wanderTarget;
   let speedMul = 1;
   e.wanderTimer -= dt;
@@ -2312,6 +2444,14 @@ function stepEntity(e, ctx) {
         target = toPlayer;
         speedMul = 1.02;
       }
+      break;
+    /**
+     * Holds its line and does not look at you. That is the entire behaviour,
+     * and the absence of a `target` assignment here is the whole point: a
+     * visitor is weather, not a predator. It is still lethal to swim into, the
+     * way a wall is, and the offscreen marker gives you its bearing.
+     */
+    case Role.Visitor:
       break;
     case Role.Hunter: {
       if (e.interest > 0) {
@@ -2403,7 +2543,7 @@ function stepEntity(e, ctx) {
   e.y += Math.sin(e.heading) * v * dt;
 }
 
-// ../src/game/arena.ts
+// src/game/arena.ts
 function stepArenaPlayer(p, dt) {
   if (p.airborne) {
     p.stepAir(dt);
@@ -2795,7 +2935,7 @@ var Arena = class {
   }
 };
 
-// ../src/lib/names.ts
+// src/lib/names.ts
 function normalizeForFilter(raw) {
   return raw.toLowerCase().replace(/[0@]/g, "o").replace(/[1!|]/g, "i").replace(/3/g, "e").replace(/4/g, "a").replace(/[5$]/g, "s").replace(/7/g, "t").replace(/[^a-z]/g, "");
 }
@@ -2854,7 +2994,7 @@ function anonymousName() {
   return `fish${Math.floor(Math.random() * 900 + 100)}`;
 }
 
-// ../src/game/tiers.ts
+// src/game/tiers.ts
 var info = {
   index: 0,
   name: "fry",
@@ -2891,7 +3031,7 @@ function tierId(mass) {
   return t.index + t.overflow;
 }
 
-// ../src/game/objectives.ts
+// src/game/objectives.ts
 var POOL = [
   (rng) => {
     const n = rng.int(18, 34);
@@ -2907,13 +3047,23 @@ var POOL = [
   },
   (rng) => {
     const n = rng.int(45, 80);
-    return { id: "survive", text: `survive ${n} seconds`, target: n, read: (p) => Math.floor(p.elapsed) };
+    return {
+      id: "survive",
+      text: `survive ${n} seconds`,
+      target: n,
+      read: (p) => Math.floor(p.elapsed)
+    };
   },
   (rng) => {
     const n = rng.int(120, 320);
     return { id: "size", text: `get to size ${n}`, target: n, read: (p) => Math.floor(p.peakMass) };
   },
-  () => ({ id: "frenzy", text: "trigger a frenzy", target: 1, read: (p) => p.frenzy ? 1 : p.bestChain >= 10 ? 1 : 0 })
+  () => ({
+    id: "frenzy",
+    text: "trigger a frenzy",
+    target: 1,
+    read: (p) => p.frenzy ? 1 : p.bestChain >= 10 ? 1 : 0
+  })
 ];
 function rollObjectives(rng, count = 3) {
   const picks = [];
@@ -2941,13 +3091,14 @@ function updateObjectives(list, p, tier) {
 }
 var EMPTY = [];
 
-// ../src/game/world.ts
+// src/game/world.ts
 var DEATH_CAUSES = {
   0: "a drifter",
   1: "a school",
   2: "a prowler",
   3: "a hunter",
-  4: "an ambush"
+  4: "an ambush",
+  6: "something enormous"
 };
 var World = class {
   pool = new EntityPool(LIVE.director.maxEntities + 24);
@@ -3220,7 +3371,10 @@ var World = class {
       const edible = e.threat === Threat.Edible;
       if (edible) {
         const angle = Math.abs(
-          Math.atan2(Math.sin(Math.atan2(dy, dx) - p.heading), Math.cos(Math.atan2(dy, dx) - p.heading))
+          Math.atan2(
+            Math.sin(Math.atan2(dy, dx) - p.heading),
+            Math.cos(Math.atan2(dy, dx) - p.heading)
+          )
         );
         const inCone = angle < eat.coneHalfAngle;
         const hitR = (inCone ? reach : mouth) + e.radius;
@@ -3364,7 +3518,7 @@ var World = class {
   }
 };
 
-// ../src/game/replay.ts
+// src/game/replay.ts
 var STEP2 = 1 / 60;
 var TAU2 = Math.PI * 2;
 var Replayer = class {
@@ -3435,11 +3589,31 @@ var Replayer = class {
   }
 };
 
-// src/board.ts
+// src/game/version.ts
+function fnv1a(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(36);
+}
+var SIM_VERSION = fnv1a(JSON.stringify(LIVE));
+
+// server/src/board.ts
 var SIZE = 20;
 var MAX_STEPS = LIVE.run.inputLogSteps;
 var TOLERANCE = 0.02;
 var RATE_PER_MIN = 6;
+function bestPerName(rows) {
+  const best = /* @__PURE__ */ new Map();
+  for (const r of rows) {
+    const key = r.name.toLowerCase();
+    const had = best.get(key);
+    if (!had || r.score > had.score) best.set(key, r);
+  }
+  return [...best.values()].sort((a, b) => b.score - a.score).slice(0, SIZE);
+}
 var Board = class {
   constructor(storage) {
     this.storage = storage;
@@ -3450,11 +3624,18 @@ var Board = class {
   /** address -> timestamps of recent submissions. Memory only; a restart forgives. */
   recent = /* @__PURE__ */ new Map();
   /** Diagnostics: how the submissions that arrived were resolved. */
-  counts = { verified: 0, mismatch: 0, refused: 0, tooLow: 0 };
+  counts = {
+    verified: 0,
+    mismatch: 0,
+    refused: 0,
+    tooLow: 0,
+    stale: 0,
+    personalBest: 0
+  };
   async load() {
     if (this.loaded) return;
     const saved = await this.storage.get("rows");
-    if (Array.isArray(saved)) this.rows = saved;
+    if (Array.isArray(saved)) this.rows = bestPerName(saved);
     this.loaded = true;
   }
   async list() {
@@ -3489,16 +3670,33 @@ var Board = class {
     if (!Number.isFinite(seed) || !Number.isFinite(claimed) || claimed <= 0) {
       return this.refuse("a run needs an ocean and a score");
     }
-    if (!Number.isFinite(aspect) || aspect < 0.2 || aspect > 5) return this.refuse("impossible window");
+    if (!Number.isFinite(aspect) || aspect < 0.2 || aspect > 5)
+      return this.refuse("impossible window");
     if (!Array.isArray(inputLog) || !Array.isArray(boostLog)) return this.refuse("no input log");
     if (inputLog.length === 0) return this.refuse("empty run");
     if (inputLog.length > MAX_STEPS) return this.refuse("run too long to check");
     if (boostLog.length < inputLog.length + 7 >> 3) return this.refuse("input log is incomplete");
     if (this.limited(address, now)) return this.refuse("too many runs too quickly");
+    if (typeof s.version === "string" && s.version !== SIM_VERSION) {
+      this.counts.stale++;
+      return {
+        ok: false,
+        reason: "this run was played on a different version of the game",
+        stale: true,
+        board: this.rows
+      };
+    }
     const cut = this.cutoff();
     if (claimed <= cut) {
       this.counts.tooLow++;
       return { ok: false, reason: "not a top score", cutoff: cut, board: this.rows };
+    }
+    const mine = this.rows.find(
+      (r) => r.name.toLowerCase() === (cleanDisplayName(typeof s.name === "string" ? s.name : "") ?? "").toLowerCase()
+    );
+    if (mine && claimed <= mine.score) {
+      this.counts.personalBest++;
+      return { ok: false, reason: "your best run is still your best run", board: this.rows };
     }
     let result;
     try {
@@ -3529,8 +3727,7 @@ var Board = class {
       at: now
     };
     this.rows.push(row);
-    this.rows.sort((a, b) => b.score - a.score);
-    this.rows = this.rows.slice(0, SIZE);
+    this.rows = bestPerName(this.rows);
     this.counts.verified++;
     await this.storage.put("rows", this.rows);
     const rank = this.rows.indexOf(row) + 1;
@@ -3542,10 +3739,10 @@ var Board = class {
   }
 };
 
-// ../src/lib/build.ts
-var BUILD_ID = "r28-stale-rooms";
+// src/lib/build.ts
+var BUILD_ID = "r37-long-climb";
 
-// src/room.ts
+// server/src/room.ts
 var TICK_MS = 50;
 var PROTOCOL = 3;
 var IDLE_SHUTDOWN_MS = 6e4;
@@ -3742,7 +3939,7 @@ function json(body, status = 200) {
   });
 }
 
-// src/index.ts
+// server/src/index.ts
 function arenaNamespace(env) {
   const preferred = env["ARENA"];
   if (isNamespace(preferred)) return preferred;
