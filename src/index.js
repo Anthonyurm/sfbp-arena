@@ -1237,8 +1237,139 @@ var TUNING = {
 };
 var LIVE = structuredClone(TUNING);
 
+// src/game/detmath.ts
+var PI = 3.141592653589793;
+var TAU = 6.283185307179586;
+var HALF_PI = 1.5707963267948966;
+var TAU_HI = 6.283185307179586;
+var TAU_LO = 24492935982947064e-32;
+function sinCore(x) {
+  const x2 = x * x;
+  return x * (1 + x2 * (-1 / 6 + x2 * (1 / 120 + x2 * (-1 / 5040 + x2 * (1 / 362880 + x2 * (-1 / 39916800 + x2 * (1 / 6227020800)))))));
+}
+function cosCore(x) {
+  const x2 = x * x;
+  return 1 + x2 * (-1 / 2 + x2 * (1 / 24 + x2 * (-1 / 720 + x2 * (1 / 40320 + x2 * (-1 / 3628800 + x2 * (1 / 479001600))))));
+}
+function reduce(x) {
+  if (x >= -PI && x <= PI) return x;
+  const k = Math.round(x / TAU);
+  return x - k * TAU_HI - k * TAU_LO;
+}
+var QUARTER_PI = 0.7853981633974483;
+var THREE_QUARTER_PI = 2.356194490192345;
+function sin(x) {
+  const r = reduce(x);
+  const neg = r < 0;
+  const a = neg ? -r : r;
+  let v;
+  if (a <= QUARTER_PI) v = sinCore(a);
+  else if (a <= THREE_QUARTER_PI) v = cosCore(a - HALF_PI);
+  else v = sinCore(PI - a);
+  return neg ? -v : v;
+}
+function cos(x) {
+  const r = reduce(x);
+  const a = r < 0 ? -r : r;
+  if (a <= QUARTER_PI) return cosCore(a);
+  if (a <= THREE_QUARTER_PI) return sinCore(HALF_PI - a);
+  return -cosCore(PI - a);
+}
+function atanCore(z) {
+  const a = z / (1 + Math.sqrt(1 + z * z));
+  const b = a / (1 + Math.sqrt(1 + a * a));
+  const t2 = b * b;
+  const s = b * (1 + t2 * (-1 / 3 + t2 * (1 / 5 + t2 * (-1 / 7 + t2 * (1 / 9 + t2 * (-1 / 11 + t2 * (1 / 13)))))));
+  return 4 * s;
+}
+function atan(z) {
+  if (z !== z) return NaN;
+  const a = z < 0 ? -z : z;
+  const v = a <= 1 ? atanCore(a) : HALF_PI - atanCore(1 / a);
+  return z < 0 ? -v : v;
+}
+function atan2(y, x) {
+  if (x === 0 && y === 0) return 0;
+  if (x === 0) return y > 0 ? HALF_PI : -HALF_PI;
+  const a = atan(y / x);
+  if (x > 0) return a;
+  return y >= 0 ? a + PI : a - PI;
+}
+var EXP_C = [
+  1,
+  1,
+  1 / 2,
+  1 / 6,
+  1 / 24,
+  1 / 120,
+  1 / 720,
+  1 / 5040,
+  1 / 40320,
+  1 / 362880,
+  1 / 3628800,
+  1 / 39916800,
+  1 / 479001600
+];
+var LN2_HI = 0.6931471805599453;
+var LN2_LO = 23190468138462996e-33;
+function log(x) {
+  if (x !== x || x < 0) return NaN;
+  if (x === 0) return -Infinity;
+  if (x === Infinity) return Infinity;
+  let m = x;
+  let e = 0;
+  while (m > 1.3333333333333333) {
+    m *= 0.5;
+    e++;
+  }
+  while (m < 0.6666666666666666) {
+    m *= 2;
+    e--;
+  }
+  const t = (m - 1) / (m + 1);
+  const t2 = t * t;
+  const s = t * (1 + t2 * (1 / 3 + t2 * (1 / 5 + t2 * (1 / 7 + t2 * (1 / 9 + t2 * (1 / 11 + t2 * (1 / 13 + t2 * (1 / 15))))))));
+  return 2 * s + e * LN2_HI + e * LN2_LO;
+}
+function exp(x) {
+  if (x !== x) return NaN;
+  if (x > 709.78) return Infinity;
+  if (x < -745) return 0;
+  const k = Math.round(x / LN2_HI);
+  const r = x - k * LN2_HI - k * LN2_LO;
+  let s = 0;
+  for (let i = EXP_C.length - 1; i >= 0; i--) s = s * r + EXP_C[i];
+  let out = s;
+  let n = k < 0 ? -k : k;
+  let f = k < 0 ? 0.5 : 2;
+  while (n > 0) {
+    if (n & 1) out *= f;
+    f *= f;
+    n >>= 1;
+  }
+  return out;
+}
+function pow(x, y) {
+  if (y === 0) return 1;
+  if (y === 1) return x;
+  if (y === 2) return x * x;
+  if (y === 3) return x * x * x;
+  if (y === 0.5) return Math.sqrt(x);
+  if (x === 0) return y > 0 ? 0 : Infinity;
+  if (x < 0) {
+    const n = Math.round(y);
+    if (n !== y) return NaN;
+    const v = exp(y * log(-x));
+    return n % 2 === 0 ? v : -v;
+  }
+  return exp(y * log(x));
+}
+function hypot(x, y) {
+  return Math.sqrt(x * x + y * y);
+}
+
 // src/game/mathx.ts
-var TAU = Math.PI * 2;
+var TAU2 = Math.PI * 2;
 function clamp(v, lo, hi) {
   return v < lo ? lo : v > hi ? hi : v;
 }
@@ -1246,12 +1377,12 @@ function lerp(a, b, t) {
   return a + (b - a) * t;
 }
 function damp(a, b, rate, dt) {
-  return lerp(a, b, 1 - Math.exp(-rate * dt));
+  return lerp(a, b, 1 - exp(-rate * dt));
 }
 function angleDelta(from, to) {
-  let d = (to - from) % TAU;
-  if (d > Math.PI) d -= TAU;
-  if (d <= -Math.PI) d += TAU;
+  let d = (to - from) % TAU2;
+  if (d > Math.PI) d -= TAU2;
+  if (d <= -Math.PI) d += TAU2;
   return d;
 }
 function turnToward(current, target, maxStep) {
@@ -1264,7 +1395,7 @@ function turnToward(current, target, maxStep) {
 // src/game/player.ts
 function scaledRate(mass, rate, k) {
   const m0 = LIVE.player.startMass;
-  return rate * Math.pow(m0, 1 - k) * Math.pow(Math.max(1, mass), k);
+  return rate * pow(m0, 1 - k) * pow(Math.max(1, mass), k);
 }
 function decayRate(mass) {
   const d = LIVE.decay;
@@ -1279,11 +1410,11 @@ function radiusFor(mass) {
 function speedFor(mass, viewHeight) {
   const p = LIVE.player;
   const viewRatio = viewHeight / LIVE.camera.viewHeightAtStart;
-  const comp = Math.pow(viewRatio, p.speedViewComp);
-  return p.baseSpeed * comp / Math.pow(mass, p.speedMassExp);
+  const comp = pow(viewRatio, p.speedViewComp);
+  return p.baseSpeed * comp / pow(mass, p.speedMassExp);
 }
 function turnFor(mass, sensitivity = LIVE.player.sensitivity) {
-  return LIVE.player.baseTurn * sensitivity / Math.pow(mass, LIVE.player.turnMassExp);
+  return LIVE.player.baseTurn * sensitivity / pow(mass, LIVE.player.turnMassExp);
 }
 var Player = class {
   x = 0;
@@ -1391,7 +1522,7 @@ var Player = class {
     this.boostActive = this.boosting && this.mass > p.boostMinMass;
     if (this.boostActive && !wasBoosting) this.boostStarted = true;
     const err = Math.abs(angleDelta(this.heading, this.desiredHeading));
-    const swing = Math.pow(Math.min(1, err / p.turnEaseAngle), p.turnEaseExp);
+    const swing = pow(Math.min(1, err / p.turnEaseAngle), p.turnEaseExp);
     const shape = p.turnSettle + (p.turnSwing - p.turnSettle) * swing;
     const turnMul = this.boostActive ? p.boostTurnMul : 1;
     const maxStep = turnFor(this.mass, sensitivity) * turnMul * shape * dt;
@@ -1403,8 +1534,8 @@ var Player = class {
     if (this.boostActive) {
       this.mass = Math.max(p.boostMinMass, this.mass - burnRate(this.mass) * dt);
     }
-    this.x += Math.cos(this.heading) * this.speed * dt;
-    this.y += Math.sin(this.heading) * this.speed * dt;
+    this.x += cos(this.heading) * this.speed * dt;
+    this.y += sin(this.heading) * this.speed * dt;
     this.mass = Math.max(1, this.mass - decayRate(this.mass) * dt);
     this.radius = radiusFor(this.mass);
     this.elapsed += dt;
@@ -1480,8 +1611,8 @@ var Player = class {
   beginBreach() {
     this.airborne = true;
     this.airTime = 0;
-    this.vx = Math.cos(this.heading) * this.speed;
-    this.vy = Math.sin(this.heading) * this.speed;
+    this.vx = cos(this.heading) * this.speed;
+    this.vy = sin(this.heading) * this.speed;
   }
   /**
    * Airborne. Gravity owns the vertical, you keep some horizontal say, and the
@@ -1494,12 +1625,12 @@ var Player = class {
     this.py = this.y;
     this.airTime += dt;
     this.vy += o.gravity * dt;
-    const want = Math.cos(this.desiredHeading);
+    const want = cos(this.desiredHeading);
     this.vx += want * o.airSteer * dt;
     this.x += this.vx * dt;
     this.y += this.vy * dt;
-    this.heading = Math.atan2(this.vy, this.vx);
-    this.speed = Math.hypot(this.vx, this.vy);
+    this.heading = atan2(this.vy, this.vx);
+    this.speed = hypot(this.vx, this.vy);
     this.mass = Math.max(1, this.mass - decayRate(this.mass) * dt);
     this.radius = radiusFor(this.mass);
     this.elapsed += dt;
@@ -1525,7 +1656,7 @@ var Player = class {
 // src/game/camera.ts
 function viewHeightFor(mass, zoom = LIVE.camera.defaultZoom) {
   const c = LIVE.camera;
-  const base = c.viewHeightAtStart * Math.pow(mass / LIVE.player.startMass, c.viewMassExp);
+  const base = c.viewHeightAtStart * pow(mass / LIVE.player.startMass, c.viewMassExp);
   const floor = radiusFor(mass) * 2 / (c.maxScreenShare * c.referenceAspect);
   return Math.max(base * zoom, floor);
 }
@@ -1687,8 +1818,8 @@ var Camera = class {
     }
     this.viewHeight = damp(this.viewHeight, target, 3.2, dt);
     const lead = this.viewHeight * c.lead;
-    let tx = px + Math.cos(heading) * lead;
-    let ty = py + Math.sin(heading) * lead;
+    let tx = px + cos(heading) * lead;
+    let ty = py + sin(heading) * lead;
     const o = LIVE.ocean;
     const halfW = this.viewWidth / 2;
     const halfH = this.viewHeight / 2;
@@ -2035,16 +2166,14 @@ var Director = class _Director {
     const d = LIVE.director;
     const o = LIVE.ocean;
     for (let attempt = 0; attempt < 14; attempt++) {
-      const angle = ctx.rng.range(0, TAU);
+      const angle = ctx.rng.range(0, TAU2);
       if (avoidForwardCone && ctx.runTime < d.graceMs / 1e3) {
-        const delta = Math.abs(
-          Math.atan2(Math.sin(angle - ctx.pheading), Math.cos(angle - ctx.pheading))
-        );
+        const delta = Math.abs(atan2(sin(angle - ctx.pheading), cos(angle - ctx.pheading)));
         if (delta < d.graceCone) continue;
       }
       const r = ctx.viewHalfDiag * ctx.rng.range(d.spawnRing[0], d.spawnRing[1]);
-      const x = ctx.camX + Math.cos(angle) * r;
-      let y = ctx.camY + Math.sin(angle) * r;
+      const x = ctx.camX + cos(angle) * r;
+      let y = ctx.camY + sin(angle) * r;
       if (y < 0) y = -y;
       if (y > o.depth) y = o.depth - (y - o.depth);
       if (y < 0 || y > o.depth) continue;
@@ -2065,11 +2194,11 @@ var Director = class _Director {
       const [alo, ahi] = d.apexMassByBand[band];
       const [blo, bhi] = bandRange(band);
       const u2 = clamp((depthFraction(y) - blo) / Math.max(1e-6, bhi - blo), 0, 1);
-      const centre = alo * Math.pow(ahi / alo, u2);
+      const centre = alo * pow(ahi / alo, u2);
       const [jlo, jhi] = d.apexMassJitter;
       return centre * ctx.rng.range(jlo, jhi);
     }
-    const u = Math.pow(ctx.rng.next(), d.massSkew);
+    const u = pow(ctx.rng.next(), d.massSkew);
     return lo + (hi - lo) * u;
   }
   init(e, ctx, x, y, mass, role) {
@@ -2084,7 +2213,7 @@ var Director = class _Director {
     e.homeY = y;
     e.mass = mass;
     e.radius = radiusFor(mass);
-    e.heading = ctx.rng.range(0, TAU);
+    e.heading = ctx.rng.range(0, TAU2);
     e.wanderTarget = e.heading;
     e.wanderTimer = ctx.rng.range(a.wanderTurnMs[0], a.wanderTurnMs[1]) / 1e3;
     e.threat = _Director.classify(mass, ctx.pmass);
@@ -2095,7 +2224,7 @@ var Director = class _Director {
     const pool = role === Role.Drifter || role === Role.Schooler ? EDIBLE_SPECIES : LETHAL_SPECIES;
     e.shape = pool[ctx.rng.int(0, pool.length - 1)];
     e.hue = ctx.rng.range(0, 360);
-    e.phase = ctx.rng.range(0, TAU);
+    e.phase = ctx.rng.range(0, TAU2);
     e.wobble = ctx.rng.range(0.7, 1.4);
     e.stateTimer = 0;
     e.interest = 0;
@@ -2199,10 +2328,10 @@ var Director = class _Director {
     for (let i = 0; i < n; i++) {
       const e = ctx.pool.spawn();
       if (!e) break;
-      const angle = ctx.rng.range(0, TAU);
+      const angle = ctx.rng.range(0, TAU2);
       const r = ctx.viewHalfDiag * ctx.rng.range(0.25, 0.95);
-      const x = ctx.camX + Math.cos(angle) * r;
-      const y = Math.max(20, ctx.camY + Math.sin(angle) * r);
+      const x = ctx.camX + cos(angle) * r;
+      const y = Math.max(20, ctx.camY + sin(angle) * r);
       this.init(e, ctx, x, y, this.massAt(ctx, y, i < 6), Role.Drifter);
       e.fade = 1;
     }
@@ -2418,7 +2547,7 @@ function schoolSteer(e, hash) {
     count++;
     const dx = e.x - o.x;
     const dy = e.y - o.y;
-    const d = Math.hypot(dx, dy);
+    const d = hypot(dx, dy);
     if (d > 1e-3 && d < separation) {
       sx += dx / d * (separation - d);
       sy += dy / d * (separation - d);
@@ -2430,7 +2559,7 @@ function schoolSteer(e, hash) {
   const tx = cx * a.schoolCohesion + sx;
   const ty = cy * a.schoolCohesion + sy;
   if (Math.abs(tx) + Math.abs(ty) < 0.01) return e.wanderTarget;
-  return Math.atan2(ty, tx);
+  return atan2(ty, tx);
 }
 function stepEntity(e, ctx) {
   const dt = ctx.dt;
@@ -2447,13 +2576,13 @@ function stepEntity(e, ctx) {
   if (e.wanderTimer <= 0) retarget(e, ctx.rng);
   const dx = ctx.px - e.x;
   const dy = ctx.py - e.y;
-  const distToPlayer = Math.hypot(dx, dy);
-  const toPlayer = Math.atan2(dy, dx);
+  const distToPlayer = hypot(dx, dy);
+  const toPlayer = atan2(dy, dx);
   const huntRange = ctx.viewHalfDiag * a.huntRangeView;
   if (e.role !== Role.Bird && (e.interest <= 0 || e.threat !== Threat.Lethal)) {
     const drift = e.homeY - e.y;
     if (Math.abs(drift) > e.radius * 6) {
-      const home = Math.atan2(drift, Math.cos(e.heading) * e.radius * 8);
+      const home = atan2(drift, cos(e.heading) * e.radius * 8);
       target = home;
     }
   }
@@ -2480,7 +2609,7 @@ function stepEntity(e, ctx) {
         }
       }
       if (e.lunge <= 0 && e.telegraph <= 0) {
-        target = Math.cos(e.heading) >= 0 ? 0 : Math.PI;
+        target = cos(e.heading) >= 0 ? 0 : Math.PI;
         e.y += (e.homeY - e.y) * Math.min(1, dt * 2.2);
         e.stateTimer -= dt;
         const takingFish = preyMass > 0 && seenLongEnough;
@@ -2583,8 +2712,8 @@ function stepEntity(e, ctx) {
       else if (e.y > o.depth - margin) awayY = -(1 - (o.depth - e.y) / margin);
     }
     if (awayX !== 0 || awayY !== 0) {
-      const wallTarget = Math.atan2(awayY, awayX === 0 ? Math.cos(target) : awayX);
-      const urgency = Math.min(1, Math.hypot(awayX, awayY));
+      const wallTarget = atan2(awayY, awayX === 0 ? cos(target) : awayX);
+      const urgency = Math.min(1, hypot(awayX, awayY));
       const d2 = angleDelta(target, wallTarget);
       target = target + d2 * urgency;
     }
@@ -2592,7 +2721,7 @@ function stepEntity(e, ctx) {
   if (e.telegraph > 0) {
     e.telegraph -= dt;
     speedMul = e.role === Role.Bird ? 0.15 : 0.35;
-    const aim = e.role === Role.Bird && e.hunting > 0 ? Math.atan2(e.diveY - e.y, e.diveX - e.x) : toPlayer;
+    const aim = e.role === Role.Bird && e.hunting > 0 ? atan2(e.diveY - e.y, e.diveX - e.x) : toPlayer;
     target = aim;
     if (e.telegraph <= 0) {
       e.lunge = (e.role === Role.Bird ? a.lungeMs * 1.6 : a.lungeMs) / 1e3;
@@ -2611,8 +2740,8 @@ function stepEntity(e, ctx) {
   const delta = angleDelta(e.heading, target);
   e.heading = turnToward(e.heading, e.heading + delta, step);
   const v = e.speed * speedMul;
-  e.x += Math.cos(e.heading) * v * dt;
-  e.y += Math.sin(e.heading) * v * dt;
+  e.x += cos(e.heading) * v * dt;
+  e.y += sin(e.heading) * v * dt;
 }
 
 // src/game/arena.ts
@@ -2624,7 +2753,7 @@ function stepArenaPlayer(p, dt) {
     return;
   }
   p.step(dt, LIVE.camera.viewHeightAtStart, 1);
-  if (p.y < p.radius * 0.35 && Math.sin(p.heading) < -LIVE.ocean.breachMinUp) {
+  if (p.y < p.radius * 0.35 && sin(p.heading) < -LIVE.ocean.breachMinUp) {
     p.beginBreach();
   } else {
     clampToWorld(p, p.radius);
@@ -2809,17 +2938,14 @@ var Arena = class {
         if (!e.active || e.dying > 0) continue;
         const dx = e.x - p.x;
         const dy = e.y - p.y;
-        const d = Math.hypot(dx, dy);
+        const d = hypot(dx, dy);
         const threat = Director.classify(e.mass, p.mass);
         const lethal = e.role === Role.Bird ? true : threat === Threat.Lethal;
         if (p.airborne && e.role !== Role.Bird) continue;
         const edible = threat === Threat.Edible && e.role !== Role.Bird;
         if (edible) {
           const angle = Math.abs(
-            Math.atan2(
-              Math.sin(Math.atan2(dy, dx) - p.heading),
-              Math.cos(Math.atan2(dy, dx) - p.heading)
-            )
+            atan2(sin(atan2(dy, dx) - p.heading), cos(atan2(dy, dx) - p.heading))
           );
           const hitR = (angle < eat.coneHalfAngle ? reach : mouth) + e.radius;
           if (d < hitR) {
@@ -2857,7 +2983,7 @@ var Arena = class {
         const b = alive[j];
         if (!a.alive || !b.alive) continue;
         if (a.player.airborne || b.player.airborne) continue;
-        const d = Math.hypot(a.player.x - b.player.x, a.player.y - b.player.y);
+        const d = hypot(a.player.x - b.player.x, a.player.y - b.player.y);
         if (d > a.player.radius + b.player.radius) continue;
         const ratio = a.player.mass / b.player.mass;
         if (ratio >= LIVE.eat.lethalRatio) {
@@ -2907,7 +3033,7 @@ var Arena = class {
     this.dir.viewHeight = viewH;
     this.dir.viewHalfH = viewH / 2;
     this.dir.viewHalfW = viewW / 2;
-    this.dir.viewHalfDiag = Math.hypot(viewW, viewH) / 2;
+    this.dir.viewHalfDiag = hypot(viewW, viewH) / 2;
     this.dir.runTime = this.time - focus.joinedAt;
   }
   runDirector(dt, alive) {
@@ -2920,7 +3046,7 @@ var Arena = class {
     for (let i = 0; i < alive.length; i++) {
       const q = alive[i].player;
       const vh = viewHeightFor(q.mass);
-      const keepRadius = Math.hypot(vh * 0.5, vh) / 2 * LIVE.director.cullRing;
+      const keepRadius = hypot(vh * 0.5, vh) / 2 * LIVE.director.cullRing;
       if (i < this.keepPool.length) {
         this.keepPool[i].x = q.x;
         this.keepPool[i].y = q.y;
@@ -3321,12 +3447,12 @@ var World = class {
     if (!p.alive) return;
     this.runTime += dt;
     if (this.inputCount < this.inputLog.length) {
-      const h = (p.desiredHeading % TAU + TAU) % TAU;
-      const byte = Math.min(255, Math.round(h / TAU * 256)) & 255;
+      const h = (p.desiredHeading % TAU2 + TAU2) % TAU2;
+      const byte = Math.min(255, Math.round(h / TAU2 * 256)) & 255;
       const i = this.inputCount++;
       this.inputLog[i] = byte;
       if (p.boosting) this.boostLog[i >> 3] |= 1 << (i & 7);
-      p.desiredHeading = byte / 256 * TAU;
+      p.desiredHeading = byte / 256 * TAU2;
     } else {
       this.verifiable = false;
     }
@@ -3337,7 +3463,7 @@ var World = class {
       p.x = Math.max(-halfW + p.radius, Math.min(halfW - p.radius, p.x));
     } else {
       p.step(dt, view.viewHeight, sensitivity);
-      if (p.y < p.radius * 0.35 && Math.sin(p.heading) < -LIVE.ocean.breachMinUp) {
+      if (p.y < p.radius * 0.35 && sin(p.heading) < -LIVE.ocean.breachMinUp) {
         p.beginBreach();
         this.events.push({ type: "breach", x: p.x, y: 0, heading: p.heading, speed: p.speed });
       } else {
@@ -3422,7 +3548,7 @@ var World = class {
       if (!e.active || e.dying > 0) continue;
       const dx = e.x - p.x;
       const dy = e.y - p.y;
-      const d = Math.hypot(dx, dy);
+      const d = hypot(dx, dy);
       if (p.airborne && e.role === Role.Bird && e.dying <= 0) {
         if (d < p.radius + e.radius * 0.5 * 1.25 && p.mass >= LIVE.ocean.breachKillMass) {
           this.banked += e.mass * LIVE.ocean.breachKillScore;
@@ -3441,10 +3567,7 @@ var World = class {
       const edible = e.threat === Threat.Edible;
       if (edible) {
         const angle = Math.abs(
-          Math.atan2(
-            Math.sin(Math.atan2(dy, dx) - p.heading),
-            Math.cos(Math.atan2(dy, dx) - p.heading)
-          )
+          atan2(sin(atan2(dy, dx) - p.heading), cos(atan2(dy, dx) - p.heading))
         );
         const inCone = angle < eat.coneHalfAngle;
         const hitR = (inCone ? reach : mouth) + e.radius;
@@ -3508,7 +3631,7 @@ var World = class {
         const o = this.hash.result[j];
         if (!o.active || o.role === Role.Bird || o.dying > 0) continue;
         if (o.mass < LIVE.director.birdMinTarget) continue;
-        const bd = Math.hypot(o.x - b.x, o.y - b.y);
+        const bd = hypot(o.x - b.x, o.y - b.y);
         if (bd > b.radius * 0.5 + o.radius) continue;
         o.dying = 1;
         o.eatenByX = b.x;
@@ -3530,7 +3653,7 @@ var World = class {
     let gain = e.mass * g.bite * falloff;
     const ratio = Math.max(
       g.minGainRatio,
-      g.maxGainRatio * Math.min(1, Math.pow(g.gainSoftCapMass / Math.max(1, p.mass), g.gainRatioExp))
+      g.maxGainRatio * Math.min(1, pow(g.gainSoftCapMass / Math.max(1, p.mass), g.gainRatioExp))
     );
     gain = Math.min(gain, p.mass * ratio);
     p.mass += gain;
@@ -3590,7 +3713,7 @@ var World = class {
 
 // src/game/replay.ts
 var STEP2 = 1 / 60;
-var TAU2 = Math.PI * 2;
+var TAU3 = Math.PI * 2;
 var Replayer = class {
   world = new World();
   cam = new Camera();
@@ -3633,7 +3756,7 @@ var Replayer = class {
     for (; this.i < end; this.i++) {
       if (!p.alive) break;
       const i = this.i;
-      p.desiredHeading = (this.log[i] ?? 0) / 256 * TAU2;
+      p.desiredHeading = (this.log[i] ?? 0) / 256 * TAU3;
       p.boosting = ((this.boost[i >> 3] ?? 0) >> (i & 7) & 1) === 1;
       this.world.step(STEP2, this.view(), LIVE.player.sensitivity);
       this.cam.step(STEP2, p.x, p.y, p.heading, p.mass);
@@ -3669,7 +3792,8 @@ function fnv1a(s) {
   }
   return (h >>> 0).toString(36);
 }
-var SIM_VERSION = fnv1a(JSON.stringify(LIVE));
+var SIM_REVISION = "r43-detmath";
+var SIM_VERSION = fnv1a(SIM_REVISION + "|" + JSON.stringify(LIVE));
 
 // src/lib/wire.ts
 var B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -3882,7 +4006,7 @@ var Board = class {
 };
 
 // src/lib/build.ts
-var BUILD_ID = "r42-no-limit";
+var BUILD_ID = "r43-same-maths-everywhere";
 
 // server/src/room.ts
 var TICK_MS = 50;
