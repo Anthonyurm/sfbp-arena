@@ -594,12 +594,41 @@ var TUNING = {
      * farm, and by then the black is lethal. That is the whole game in one
      * table.
      */
+    /**
+     * ROUND 26b: the pair is now the TOP and the BOTTOM of the band, and an
+     * apex is sized by where in the band it spawns — not drawn at random from
+     * the whole range.
+     *
+     * "if i am small and try to swim straight down i cant bc so many big fish
+     * take up the screen." Measured, as the share of screen columns with
+     * something lethal in them, and the widest gap left to steer through:
+     *
+     *     mass 10   shallows   16% blocked, 50% gap
+     *     mass 10   the deep   81% blocked, 18% gap
+     *     mass 10   the black 100% blocked,  0% gap
+     *
+     * Zero gap is not a gate, it is a wall — and the cause was geometry, not
+     * difficulty: one body in the deep was 544 units across against a fry's
+     * 574-unit screen, and one in the black was 1,246. You cannot route around
+     * something you cannot see past.
+     *
+     * Shrinking them everywhere would have fixed the descent and destroyed the
+     * top of the game: the same bodies are the only food big enough for a very
+     * large fish AND the only things that can still eat one, so the round-26
+     * ceiling is built on them. Scaling by depth serves both ends. The top of
+     * the deep — the water a small fish actually reaches — holds bodies around
+     * 350, which is a quarter of its screen and steerable. The seabed still
+     * holds 22,000s, which is about 40% of the screen of a fish big enough to
+     * be down there.
+     */
     apexMassByBand: [
       [0, 0],
       [0, 0],
-      [900, 4200],
-      [3e3, 22e3]
+      [350, 4200],
+      [4200, 22e3]
     ],
+    /** How much an individual apex varies around the size its depth implies. */
+    apexMassJitter: [0.72, 1.36],
     /** Higher = more small fish within a band. 3.5 puts the median near the floor. */
     massSkew: 3.5,
     /**
@@ -610,6 +639,39 @@ var TUNING = {
     minEdibleOnScreen: 4,
     /** Density has a ceiling too, or the screen silts up as you outgrow things. */
     edibleOverflow: 1.8,
+    /**
+     * HOW MUCH OF THE SCREEN MAY BE THINGS THAT EAT YOU.
+     *
+     * "if i am small and try to swim straight down i cant bc so many big fish
+     * take up the screen it's impossible to go down past shallows." Measured,
+     * as a share of the screen's width covered by lethal bodies:
+     *
+     *     mass      surface  shallows  the deep  the black
+     *       10          4%       10%       76%        90%
+     *      400         40%        5%       71%        94%
+     *
+     * And a fish that swims down, dodging, died in 16 runs out of 16 at every
+     * size from 10 to 400 — never reaching past 39% of the ocean's depth. The
+     * black, where the 3.2x score multiplier lives and where the entire "dive
+     * to cash in" design pays out, has never been reachable except by already
+     * being enormous.
+     *
+     * The reason is geometry, not difficulty. A body in the deep is 544 units
+     * across; a fry's screen is 574 wide. One in the black is 1,246 — more than
+     * twice the width of the window the player sees the world through. **You
+     * cannot route around something you cannot see past.** Round 13 fixed this
+     * once by overlapping the band mass ranges; round 14 raised the apex sizes
+     * and rebuilt the wall without noticing.
+     *
+     * So the deep stays terrifying and stops being sealed: threats may cover
+     * this much of the screen and no more. Past it the director keeps stocking
+     * the water, but only with things that are not lethal to whoever it is
+     * filling for. There is always a gap; finding it is the game.
+     *
+     * This withholds SPAWNS only — it never removes a fish somebody is already
+     * looking at, which in a shared room could be somebody else.
+     */
+    lethalScreenCap: 0.4,
     /** Exactly one "just above the band" tease: the fish you want and can't have. */
     teaseCount: 1,
     teaseBand: [1.1, 1.32],
@@ -1551,9 +1613,47 @@ function clampDepth(pos, radius) {
 
 // ../src/game/director.ts
 var VISITORS = ["a sturgeon", "something old", "a shadow", "the long one", "a wanderer"];
+function bandRange(band) {
+  const b = LIVE.ocean.bands;
+  if (band === 0 /* Surface */) return [0, b.surface];
+  if (band === 1 /* Shallows */) return [b.surface, b.shallows];
+  if (band === 2 /* Deep */) return [b.shallows, b.deep];
+  return [b.deep, 1];
+}
+function unionWidth(spans) {
+  const n = spans.length / 2;
+  if (n === 0) return 0;
+  for (let i = 2; i < spans.length; i += 2) {
+    const lo = spans[i];
+    const hi = spans[i + 1];
+    let j = i - 2;
+    while (j >= 0 && spans[j] > lo) {
+      spans[j + 2] = spans[j];
+      spans[j + 3] = spans[j + 1];
+      j -= 2;
+    }
+    spans[j + 2] = lo;
+    spans[j + 3] = hi;
+  }
+  let total = 0;
+  let end = -Infinity;
+  for (let i = 0; i < spans.length; i += 2) {
+    const lo = spans[i] > end ? spans[i] : end;
+    if (spans[i + 1] > lo) {
+      total += spans[i + 1] - lo;
+      end = spans[i + 1];
+    }
+  }
+  return total;
+}
 var Director = class _Director {
   timer = 0;
   schoolSeq = 1;
+  /**
+   * Scratch for the lethal-coverage union, as flat [lo, hi] pairs. Reused, so
+   * the twice-a-second restock allocates nothing.
+   */
+  lethalSpans = [];
   /** Set when a visitor arrived on this rebalance. The world drains it. */
   visitorArrived = null;
   reset() {
@@ -1642,6 +1742,8 @@ var Director = class _Director {
     let edible = 0;
     let birds = 0;
     let total = 0;
+    const lethal = this.lethalSpans;
+    lethal.length = 0;
     const items = ctx.pool.items;
     for (let i = 0; i < items.length; i++) {
       const e = items[i];
@@ -1654,7 +1756,13 @@ var Director = class _Director {
       if (Math.abs(dx) > halfW || Math.abs(dy) > halfH) continue;
       onScreen++;
       if (e.threat === Threat.Edible) edible++;
+      else if (e.threat === Threat.Lethal) {
+        const pad = e.radius + ctx.pradius;
+        lethal.push(Math.max(-halfW, dx - pad), Math.min(halfW, dx + pad));
+      }
     }
+    const walledIn = unionWidth(lethal) > halfW * 2 * LIVE.director.lethalScreenCap;
+    if (walledIn) this.thinLethal(ctx);
     const band = bandAt(ctx.camY);
     const want = d.densityByBand[band];
     if (onScreen > want * d.edibleOverflow) {
@@ -1663,7 +1771,7 @@ var Director = class _Director {
     let live = onScreen;
     let misses = 0;
     while (live < want && total < ctx.maxEntities - 12 && misses < 4) {
-      const added = this.spawnResident(ctx, false);
+      const added = this.spawnResident(ctx, walledIn);
       if (added <= 0) {
         misses++;
         continue;
@@ -1686,6 +1794,24 @@ var Director = class _Director {
     const deepEnough = bandAt(ctx.camY) >= 2 /* Deep */;
     if (deepEnough && ctx.rng.chance(d.visitorChance) && total < ctx.maxEntities) {
       this.visitorArrived = this.spawnVisitor(ctx);
+    }
+  }
+  /**
+   * Release off-screen bodies that are lethal to this player, until the width
+   * still queued up is back under the cap. On-camera bodies are never touched.
+   */
+  thinLethal(ctx) {
+    const items = ctx.pool.items;
+    const halfW = ctx.viewHalfW;
+    const halfH = ctx.viewHalfH;
+    for (let i = 0; i < items.length; i++) {
+      const e = items[i];
+      if (!e.active || e.dying > 0 || e.role === Role.Bird) continue;
+      if (e.threat !== Threat.Lethal) continue;
+      const dx = e.x - ctx.camX;
+      const dy = e.y - ctx.camY;
+      if (Math.abs(dx) < halfW * 1.15 && Math.abs(dy) < halfH * 1.15) continue;
+      ctx.pool.release(e);
     }
   }
   /** Retire surplus bodies, furthest offscreen first. */
@@ -1737,7 +1863,11 @@ var Director = class _Director {
     if (forceSmall) return lo * ctx.rng.range(1, 1.6);
     if (ctx.rng.chance(d.apexChanceByBand[band])) {
       const [alo, ahi] = d.apexMassByBand[band];
-      return alo + (ahi - alo) * ctx.rng.next();
+      const [blo, bhi] = bandRange(band);
+      const u2 = clamp((depthFraction(y) - blo) / Math.max(1e-6, bhi - blo), 0, 1);
+      const centre = alo * Math.pow(ahi / alo, u2);
+      const [jlo, jhi] = d.apexMassJitter;
+      return centre * ctx.rng.range(jlo, jhi);
     }
     const u = Math.pow(ctx.rng.next(), d.massSkew);
     return lo + (hi - lo) * u;
@@ -2324,6 +2454,7 @@ var Arena = class {
       px: 0,
       py: 0,
       pmass: 10,
+      pradius: 10,
       pheading: 0,
       camX: 0,
       camY: LIVE.ocean.depth * LIVE.ocean.startDepth,
@@ -2555,6 +2686,7 @@ var Arena = class {
     this.dir.px = p.x;
     this.dir.py = p.y;
     this.dir.pmass = p.mass;
+    this.dir.pradius = p.radius;
     this.dir.pheading = p.heading;
     this.dir.camX = p.x;
     this.dir.camY = p.y;
@@ -2904,6 +3036,7 @@ var World = class {
     px: 0,
     py: 0,
     pmass: 0,
+    pradius: 0,
     pheading: 0,
     camX: 0,
     camY: 0,
@@ -2943,6 +3076,7 @@ var World = class {
     this.dir.px = p.x;
     this.dir.py = p.y;
     this.dir.pmass = p.mass;
+    this.dir.pradius = p.radius;
     this.dir.pheading = p.heading;
     this.dir.runTime = this.runTime;
     this.dir.surfaceOccupied = bandAt(p.y) <= 1 /* Shallows */;
