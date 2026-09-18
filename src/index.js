@@ -3542,6 +3542,9 @@ var Board = class {
   }
 };
 
+// ../src/lib/build.ts
+var BUILD_ID = "r28-stale-rooms";
+
 // src/room.ts
 var TICK_MS = 50;
 var PROTOCOL = 3;
@@ -3596,6 +3599,22 @@ var ArenaRoom = class {
       return new Response(
         JSON.stringify({
           ok: true,
+          /**
+           * WHICH CODE THIS ROOM IS ACTUALLY RUNNING.
+           *
+           * A Durable Object keeps the script version it was created with until
+           * it is evicted from memory. `atlantic` is the room matchmaking sends
+           * everybody to, so it was never idle long enough to die — and it sat
+           * there for six rounds running the version from BEFORE the round-21
+           * fixed-timestep fix, where `dt` is always zero and no fish ever
+           * spawn. Every player landed in it. Every local measurement ran
+           * against fresh code and looked perfect.
+           *
+           * It was only found because that old version's status response was
+           * missing two fields. That was luck. This is the field that makes it
+           * visible, and `pickRoom` in index.ts is what acts on it.
+           */
+          build: BUILD_ID,
           players: this.clients.size,
           uptimeSeconds: Math.round(this.arena.time),
           ticks: this.ticks,
@@ -3745,14 +3764,16 @@ async function pickRoom(arena) {
       try {
         const res = await arena.get(arena.idFromName(room)).fetch("https://arena/status");
         const body = await res.json();
-        return { room, players: Number(body.players) || 0 };
+        return { room, players: Number(body.players) || 0, build: String(body.build ?? "") };
       } catch {
-        return { room, players: HARD_CAP };
+        return { room, players: HARD_CAP, build: "" };
       }
     })
   );
-  const open = counts.filter((c) => c.players < HARD_CAP);
+  let open = counts.filter((c) => c.players < HARD_CAP);
   if (open.length === 0) return null;
+  const fresh = open.filter((c) => c.build === BUILD_ID);
+  if (fresh.length > 0) open = fresh;
   const busy = open.filter((c) => c.players > 0 && c.players < SOFT_CAP);
   if (busy.length > 0) {
     return busy.reduce((best, c) => c.players > best.players ? c : best);
@@ -3769,6 +3790,7 @@ var index_default = {
       return json2({
         ok: arena !== null,
         service: "sfbp-arena",
+        build: BUILD_ID,
         durableObject: arena ? "bound" : "MISSING \u2014 add a Durable Object binding to this Worker",
         bindings: Object.keys(env)
       });
