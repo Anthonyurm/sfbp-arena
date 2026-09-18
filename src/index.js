@@ -641,6 +641,37 @@ var TUNING = {
      * close to full strength where they used to be halfway faded. Same soft
      * light, fewer pixels.
      */
+    /**
+     * ROUND 20: MEASURED, AND DELIBERATELY LEFT ALONE.
+     *
+     * The light surface is composed at this fraction of the CSS viewport and
+     * then magnified onto a canvas `dpr` times larger, so at dpr 2 a 166x269
+     * surface covers 780x1328 device pixels. That magnification was the single
+     * most expensive thing in the game (see WaterLayers.drawLight) and turning
+     * its filter off fixed it. The obvious follow-up was to raise this number
+     * so nearest-neighbour had less to stretch — and the same blit, same
+     * destination, from source surfaces of 104x168 up to 624x1008, measured:
+     *
+     *   bilinear  10.4  10.3  10.4  10.2  10.3  10.4 ms
+     *   nearest    3.0   3.0   3.0   3.0   3.0   3.1 ms
+     *
+     * Flat. The blit is destination-bound — cost is per device pixel written,
+     * not per source pixel read — so raising this buys no sharpness the filter
+     * change needed, and it is NOT free: composing the scratch surface does
+     * scale with its area. Whole frame, shoal at the surface, dpr 2:
+     *
+     *   0.3 -> 12.1ms   0.4 -> 12.3ms   0.5 -> 12.6ms
+     *   0.6 -> 13.1ms   0.75 -> 13.8ms  1.0 -> 15.7ms
+     *
+     * And photographing all of them against the old bilinear look, the higher
+     * scales are the BIGGER art change, not the smaller one: mean per-pixel
+     * difference 0.08/255 at 0.4, against 1.43 at 0.5, 2.25 at 0.6 and 3.24 at
+     * 0.75 — because the shafts and caustics are blurred at build time in
+     * source space, so a larger surface quietly sharpens them.
+     *
+     * 0.4 is therefore both the fastest option and the one closest to the
+     * round-18 water. It stays.
+     */
     waterScale: 0.4,
     /** Threat rim / edible tint intensities. Never color alone — §13. */
     edibleTint: 0.34,
@@ -2266,13 +2297,17 @@ var ArenaRoom = class {
   timer = null;
   lastTick = Date.now();
   emptySince = Date.now();
+  /** Diagnostics. Cheap, and the difference between a theory and an answer. */
+  ticks = 0;
   async fetch(request) {
     if (request.headers.get("Upgrade") !== "websocket") {
       return new Response(
         JSON.stringify({
           ok: true,
           players: this.clients.size,
-          uptimeSeconds: Math.round(this.arena.time)
+          uptimeSeconds: Math.round(this.arena.time),
+          ticks: this.ticks,
+          entities: this.arena.pool.items.filter((e) => e.active).length
         }),
         { headers: { "content-type": "application/json", "access-control-allow-origin": "*" } }
       );
@@ -2313,6 +2348,27 @@ var ArenaRoom = class {
     server.addEventListener("error", close);
     return new Response(null, { status: 101, webSocket: client });
   }
+  /**
+   * The live board, biggest first. Computed once per tick and shared by every
+   * client in the room rather than per-snapshot, because it is the same list
+   * for all of them and a room of forty would otherwise sort forty times.
+   *
+   * Mass rather than score, deliberately: in a shared ocean the thing you want
+   * to know about the name above you is whether it can eat you.
+   */
+  cachedBoard = [];
+  board() {
+    return this.cachedBoard;
+  }
+  rebuildBoard() {
+    const rows = [];
+    for (const entry of this.arena.players.values()) {
+      if (!entry.alive) continue;
+      rows.push({ name: entry.name, mass: Math.round(entry.player.mass) });
+    }
+    rows.sort((a, b) => b.mass - a.mass);
+    this.cachedBoard = rows.slice(0, 8);
+  }
   start() {
     if (this.timer) return;
     this.lastTick = Date.now();
@@ -2320,7 +2376,8 @@ var ArenaRoom = class {
   }
   tick() {
     const now = Date.now();
-    const dt = Math.min(0.25, (now - this.lastTick) / 1e3);
+    const dt = TICK_MS / 1e3;
+    this.ticks++;
     this.lastTick = now;
     if (this.clients.size === 0) {
       if (now - this.emptySince > IDLE_SHUTDOWN_MS && this.timer) {
@@ -2331,6 +2388,7 @@ var ArenaRoom = class {
     }
     this.emptySince = now;
     this.arena.step(dt);
+    this.rebuildBoard();
     for (const client of this.clients.values()) {
       if (client.ws.readyState !== 1) continue;
       const snap = this.arena.snapshot(client.id);
@@ -2343,7 +2401,9 @@ var ArenaRoom = class {
             JSON.stringify({ type: "died", cause: entry.causeOfDeath, score: snap.you.score })
           );
         }
-        client.ws.send(JSON.stringify({ type: "s", n: this.clients.size, ...snap }));
+        client.ws.send(
+          JSON.stringify({ type: "s", n: this.clients.size, board: this.board(), ...snap })
+        );
       } catch {
       }
     }
