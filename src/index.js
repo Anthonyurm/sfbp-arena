@@ -299,7 +299,31 @@ var TUNING = {
      * tier table for it: a big bite is the best moment in the run, not the end
      * of the progression.
      */
-    maxGainRatio: 0.35
+    maxGainRatio: 0.35,
+    /**
+     * WHY THE CEILING ABOVE HAS TO FALL WITH SIZE.
+     *
+     * Hunger (see `decay.hungerPerSecond`) makes an enormous fish lose 2.9% of
+     * itself a second at mass 60,000 — and an autopilot run still reached
+     * 101,927, because growth is not a rate, it is a STEP. One 22,000 body at
+     * mass 60,000 is a 35% jump in a single frame, and a continuous drain of a
+     * few percent a second cannot out-run a step function. Twenty seconds of
+     * starvation, undone in one bite.
+     *
+     * The gap is density, not ratio. At mass 150, something 92% of your size is
+     * a rare event and the biggest moment of the run. In the black, where
+     * bodies weigh 3,000 to 22,000, it is most of what swims past. So the cap
+     * holds at 0.35 for the whole early and mid game and only starts falling
+     * past `gainSoftCapMass` — nothing below 2,500 changes by a single point.
+     *
+     * At 60,000 the largest possible bite drops from 35% of the fish to 8%,
+     * which hunger undoes in under three seconds. That is what makes the
+     * plateau a plateau rather than a staircase.
+     */
+    gainSoftCapMass: 2500,
+    gainRatioExp: 0.45,
+    /** A meal is always worth something, however big you are. */
+    minGainRatio: 0.02
   },
   decay: {
     /**
@@ -331,7 +355,35 @@ var TUNING = {
      * `mass ^ massExp`, so it keeps rising forever and still falls behind
      * income. At 0.5 a fish of mass 1,000 pays 0.03% a second instead of 0.3%.
      */
-    massExp: 0.5
+    massExp: 0.5,
+    /**
+     * HUNGER: what it costs to be enormous.
+     *
+     * The round-19 curve above fixed a real complaint — "you lose mass too
+     * quickly when you get bigger" — and in fixing it removed every brake from
+     * the top of the game. Measured after a live run reached mass 255,547:
+     * decay at that size was **0.00% of body mass per second** while food was
+     * coming in at 1.11%, and bites per second were RISING, because everything
+     * in the ocean was edible and the magnet hoovered it in. There was no size
+     * at which the game pushed back.
+     *
+     * This is the second term, and it is the agar.io answer: the bigger you
+     * are, the more you burn simply staying alive. It is shaped so it is
+     * invisible where the round-19 complaint lived and decisive past it —
+     * `hungerExp` above 1 means the cost as a FRACTION of body mass rises with
+     * size, which is the only thing that can ever stop a runaway.
+     *
+     * Where it lands is the whole design: growth flattens just above 22,000,
+     * which is what the largest body in the black weighs. So the economic
+     * ceiling sits inside the last band that still has something in it bigger
+     * than you — a giant is never both safe and fed.
+     *
+     * The old rule still holds: this must never be the thing that KILLS you.
+     * It is a plateau, not a spiral. A fish at the ceiling that keeps eating
+     * holds its size; one that stops, shrinks, and that is legible.
+     */
+    hungerPerSecond: 107e-6,
+    hungerExp: 1.8
   },
   // ------------------------------------------------------------------- chain
   chain: {
@@ -400,10 +452,74 @@ var TUNING = {
      * which is why `untelegraphed deaths` in the sim is the gate on this number.
      */
     viewMassExp: 0.22,
-    /** Camera lerp toward the player, per second (1 = instant). */
-    follow: 7.5,
-    /** Look-ahead along heading, as a fraction of view height. */
-    lead: 0.11,
+    /**
+     * THE CLAMP, and why the exponent above is not simply raised instead.
+     *
+     * A real run reached mass 255,547, where the curve above puts the fish at
+     * **147% of a phone's screen width** — wider than the screen it is drawn
+     * on. Measured across the whole range:
+     *
+     *   mass      8    25   150  1000  2500  6000  20000  60000  255547
+     *   width    8%   11%   18%   31%   40%   51%    72%    98%    147%
+     *
+     * Agar.io and slither.io hold that number roughly constant: the camera
+     * zooms with you, you stay the same size, and the WORLD is the thing that
+     * changes. Raising `viewMassExp` to 0.5 would do that — and would undo
+     * round 16's finding, which was that at a high exponent players never feel
+     * themselves grow at all. The early game is where "I am getting bigger"
+     * matters most and it is the part almost everybody plays.
+     *
+     * So: keep the curve, and put a ceiling on it. Below about mass 1,800
+     * nothing changes by a single pixel; above it the fish holds at
+     * `maxScreenShare` and the ocean opens up instead.
+     */
+    maxScreenShare: 0.35,
+    /**
+     * The clamp is measured against THIS aspect ratio, not the real one.
+     *
+     * View height must depend on mass and nothing else: the arena's director
+     * reads it for every player in a shared room, and a replay has to
+     * reproduce it exactly. Deriving it from the actual window would make the
+     * simulation depend on the shape of the screen far more deeply than it
+     * already does.
+     *
+     * A portrait phone is the device this matters on and the one most people
+     * play on — width is the short side, and a fish is drawn along its length.
+     * Clamping against a phone means a phone gets exactly `maxScreenShare` and
+     * anything wider gets more water, which is the right way round.
+     */
+    referenceAspect: 0.5,
+    /**
+     * Camera lerp toward the player, per second. **Effectively a lock.**
+     *
+     * Setting `lead` to zero was only half of putting the fish in the middle.
+     * The camera damps toward the player, so at any steady speed it sits a
+     * constant distance behind — and that distance is speed divided by this
+     * number. Measured while swimming, as a fraction of half the screen width:
+     *
+     *     follow      7.5    15    30    60    200
+     *     off centre  14.7%  6.9%  3.0%  1.1%  0.1%
+     *
+     * The lag was pure damping: the worst sample equalled the mean at every
+     * value, so there is no jitter being smoothed out here and nothing is lost
+     * by removing it. 60 is about two pixels on a phone, and keeps just enough
+     * give to absorb a discontinuity rather than cutting to it.
+     */
+    follow: 60,
+    /**
+     * Look-ahead along heading, as a fraction of view height. **Zero.**
+     *
+     * It was 0.11, which pushed the fish about a tenth of the screen off centre
+     * in whatever direction it was pointing — the usual argument being that you
+     * see more of where you are going. Anthony wants the fish in the middle and
+     * he is right for this game: every other .io game centres you, the fish is
+     * the thing your eye tracks, and a hero that slides around its own frame as
+     * you turn is harder to follow than the extra sliver of water is worth.
+     *
+     * The camera is still clamped to the ocean, so a fish pressed against the
+     * seabed or the wall is off centre — that is the world ending, not a lead.
+     */
+    lead: 0,
     /**
      * Player pinch/scroll zoom. Generous range, persisted. §6 rule 4.
      *
@@ -531,7 +647,21 @@ var TUNING = {
      * range-filtered per player, so none of it reaches the wire.
      */
     arenaEntitiesPerPlayer: 110,
-    arenaMaxEntities: 4400,
+    /**
+     * ROUND 26. 4,400 -> 2,400, because the server has to simulate all of them
+     * twenty times a second and the tick is O(entities). Measured, in this
+     * container:
+     *
+     *     entities   103    318    756   1194
+     *     tick       0.75   2.40   5.94  10.43 ms   (budget 50ms)
+     *
+     * 4,400 would have been roughly 40ms of a 50ms tick with nothing left for
+     * the snapshots, on a machine that is probably faster than a Worker. The
+     * cap only binds past about twenty players, and a very full room getting
+     * slightly thinner water is a far better failure than a room that cannot
+     * hold its tick rate.
+     */
+    arenaMaxEntities: 2400,
     /** Rare visitors: something enormous crossing the deep, ignoring you. */
     visitorChance: 0.03,
     visitorBand: [4, 9]
@@ -734,12 +864,42 @@ var TUNING = {
      * there is a hard ceiling on how much of any second can be spent frozen.
      */
     biteHitstopMs: 60,
-    /** Each further link in a chain cuts the hitstop by this factor. */
-    hitstopChainDecay: 0.9,
-    /** Never spend more than this many milliseconds of any second frozen. */
-    hitstopBudgetMsPerSec: 90,
-    tierSlowMoMs: 500,
-    tierSlowMoScale: 0.35,
+    /**
+     * Each further link in a chain cuts the hitstop by this factor.
+     *
+     * ROUND 24: 0.9 -> 1.8. The budget below was being honoured on paper and
+     * broken in practice — see `hitstopMinMs`. With the faster decay the second
+     * link of a chain already falls under the floor, so a chain is one punch
+     * followed by clean, fast eating, which is what a frenzy is supposed to
+     * feel like.
+     */
+    hitstopChainDecay: 1.8,
+    /**
+     * ROUND 24. A freeze always costs a WHOLE FRAME, so a grant shorter than
+     * this is not felt as impact — it is felt as a dropped frame. Below the
+     * floor the bite gets its shake and its particles and no freeze at all.
+     *
+     * Set at roughly a frame and a half at 60Hz.
+     */
+    hitstopMinMs: 24,
+    /**
+     * Never spend more than this many milliseconds of any second frozen.
+     *
+     * ROUND 24: 90 -> 60. Measured mid-frenzy the world was frozen 16% of the
+     * time against a nominal 9% ceiling, because the budget was charged the
+     * milliseconds of hitstop REMAINING while the player lost the whole frame.
+     * The accounting is fixed in engine.ts; the ceiling comes down to match
+     * what a player will actually accept.
+     */
+    hitstopBudgetMsPerSec: 60,
+    /**
+     * ROUND 24: 500ms at 0.35 -> 260ms at 0.5. "The game still lags a bit when
+     * i upgrade fishes." Half a second at a third speed is not emphasis, it is
+     * an interruption — you have time to notice the controls are not answering.
+     * A quarter second at half speed reads as a beat and hands the fish back.
+     */
+    tierSlowMoMs: 260,
+    tierSlowMoScale: 0.5,
     deathFreezeMs: 350,
     shakeBite: 2.2,
     /** The one big hit left: catching a bird out of the air. */
@@ -796,14 +956,43 @@ var TUNING = {
     /** Reconnect backoff, milliseconds. Capped so a dead server is not hammered. */
     reconnectMs: [400, 900, 2e3, 4e3, 8e3],
     /** No traffic for this long and the socket is considered dead. */
-    staleMs: 6e3
+    staleMs: 6e3,
+    /**
+     * ROUND 24. How long a player who WAS online waits for the arena to come
+     * back before the game puts them in a pond of their own.
+     *
+     * Measured: killing the arena mid-run left the client "retrying" forever
+     * with ninety-six fish standing perfectly still and a fish that could not
+     * eat any of them. The give-up path only covered a connection that never
+     * landed, so a connection that landed and then died had no way out — and a
+     * frozen ocean is indistinguishable from a game that has stopped working,
+     * which is very likely what "extremely laggy" meant.
+     *
+     * Long enough to ride out a tunnel or a handover; short enough that nobody
+     * sits and stares at it.
+     */
+    giveUpAfterMs: 6e3
   },
   run: {
     /** Death card appears over the still-running pond. Restart must beat 1s. */
     deathCardDelayMs: 240,
-    /** Score = what you banked, plus chain credit. */
-    scoreBankWeight: 1,
-    scoreChainWeight: 40,
+    /**
+     * SCORE = what you banked, plus chain credit — divided by ten.
+     *
+     * A live run came back at **4,247,973**. Seven digits is unreadable at a
+     * glance, impossible to repeat out loud, and makes a leaderboard look like
+     * a slot machine rather than a ranking. Two things bring it down: the mass
+     * ceiling from this round means far less gets eaten in the first place, and
+     * these weights take a factor of ten off what is left.
+     *
+     * Calibrated against the autopilot, which is a worse player than anybody
+     * real: its median run now scores about 1,100 and its best about 2,700. A
+     * human is roughly an order of magnitude better than it, which puts a good
+     * run in the thousands and a great one in the tens of thousands. Nothing
+     * about the RANKING changes — this is the same number, printed smaller.
+     */
+    scoreBankWeight: 0.1,
+    scoreChainWeight: 4,
     /**
      * How many simulation steps of input a run records. 60Hz x 300s, so five
      * minutes at one byte a step — 18KB, and a run longer than this stops
@@ -838,38 +1027,14 @@ function turnToward(current, target, maxStep) {
   return target;
 }
 
-// ../src/game/types.ts
-var Kind = {
-  Crumb: 0,
-  Fish: 1
-};
-var Role = {
-  /** Wanders, never threatens. Chain fodder. */
-  Drifter: 0,
-  /** Moves as part of a school. */
-  Schooler: 1,
-  /** Wanders, but is or may become lethal. */
-  Prowler: 2,
-  /** Actively hunts the player (tier 5+). */
-  Hunter: 3,
-  /** Starts still near the edge of view, strikes once. */
-  Ambusher: 4,
-  /** Lives above the waterline. Dives. Cannot be eaten at any size. */
-  Bird: 5
-};
-var Threat = {
-  Edible: 0,
-  Standoff: 1,
-  Lethal: 2
-};
-
 // ../src/game/player.ts
 function scaledRate(mass, rate, k) {
   const m0 = LIVE.player.startMass;
   return rate * Math.pow(m0, 1 - k) * Math.pow(Math.max(1, mass), k);
 }
 function decayRate(mass) {
-  return scaledRate(mass, LIVE.decay.perSecond, LIVE.decay.massExp);
+  const d = LIVE.decay;
+  return scaledRate(mass, d.perSecond, d.massExp) + scaledRate(mass, d.hungerPerSecond, d.hungerExp);
 }
 function burnRate(mass) {
   return scaledRate(mass, LIVE.player.boostMassPerSec, LIVE.player.boostMassExp);
@@ -1123,11 +1288,221 @@ var Player = class {
   }
 };
 
+// ../src/game/camera.ts
+function viewHeightFor(mass, zoom = LIVE.camera.defaultZoom) {
+  const c = LIVE.camera;
+  const base = c.viewHeightAtStart * Math.pow(mass / LIVE.player.startMass, c.viewMassExp);
+  const floor = radiusFor(mass) * 2 / (c.maxScreenShare * c.referenceAspect);
+  return Math.max(base * zoom, floor);
+}
+var Camera = class {
+  x = 0;
+  y = 0;
+  viewHeight = LIVE.camera.viewHeightAtStart;
+  /** Player pinch/scroll zoom. >1 sees more. Persisted by the React shell. */
+  userZoom = LIVE.camera.defaultZoom;
+  shake = 0;
+  punch = 0;
+  punchTimer = 0;
+  /**
+   * How long THIS punch was asked for. The ease used to normalise against the
+   * tier-punch duration whatever the caller passed, so the boost lens-in — a
+   * 0.28s effect measured against 0.9s — started a third of the way through
+   * itself and only ever applied 31% of its amount.
+   */
+  punchDuration = LIVE.camera.tierPunchMs / 1e3;
+  viewport = { w: 1, h: 1, dpr: 1 };
+  /**
+   * WHERE THE CAMERA IS DRAWN, as opposed to where the simulation has put it.
+   *
+   * `step` runs at the fixed simulation rate; the renderer runs at the display
+   * rate. Every entity in the game is drawn at `lerp(px, x, alpha)` for exactly
+   * that reason — and the camera was not. It was read raw, so on any frame where
+   * no simulation step happened the fish glided and the entire ocean behind it
+   * stood still.
+   *
+   * ROUND 24. Measured while swimming, camera translation per frame in screen
+   * pixels (`scripts/lag-motion.mjs`, and the camera dump behind it):
+   *
+   *   normal play        1.77 1.86 1.94 2.02 2.10 ...   0 still frames of 54
+   *   during a tier-up   0.00 3.43 0.00 0.00 3.40 ...   20 still frames of 31
+   *
+   * The tier-up runs the world at 0.35x for half a second, so one fixed step
+   * lands every third frame — and the background scrolled a FULL frame's worth
+   * and then stopped for two. Same distance per jump as at full speed, a third
+   * of the frames. That is not slow motion, it is judder, and it is a large part
+   * of what "the game lags a bit when i upgrade fishes" was pointing at. It also
+   * fires on any device whose refresh rate is not exactly 60Hz, where the step
+   * count per frame alternates between one and two all the time.
+   *
+   * These are separate fields rather than the live ones on purpose: the
+   * simulation reads `x`/`y`/`viewHeight` through `Engine.view()`, and a
+   * simulation that depended on the render alpha would stop being replayable
+   * from its input log.
+   */
+  drawX = 0;
+  drawY = LIVE.ocean.depth * LIVE.ocean.startDepth;
+  drawViewHeight = LIVE.camera.viewHeightAtStart;
+  drawScale = 1;
+  drawViewWidth = LIVE.camera.viewHeightAtStart;
+  prevX = 0;
+  prevY = LIVE.ocean.depth * LIVE.ocean.startDepth;
+  prevViewHeight = LIVE.camera.viewHeightAtStart;
+  /**
+   * THE PUNCH IS CINEMA, NOT PHYSICS.
+   *
+   * A tier-up pulls the camera back and a breach widens it, and both used to
+   * multiply `viewHeight` itself — the number the SIMULATION reads. View height
+   * is how far the director spawns, how big the cull ring is, and how fast the
+   * player moves in screen space, so for half a second after every tier-up the
+   * ocean was being stocked at a different radius and the fish was swimming at
+   * a different speed. Nobody would ever have noticed, and it made a run
+   * impossible to replay: the replay has no events, and a player with reduced
+   * motion never got the punch at all, so three people could play the same
+   * inputs in the same ocean and get three different runs.
+   *
+   * Now the punch is applied when the frame is DRAWN and nowhere else.
+   */
+  punchFactor = 1;
+  prevPunchFactor = 1;
+  /**
+   * Latch the drawn camera for this frame, from the engine's own interpolation
+   * alpha — the same number the entities are lerped with, so the camera and the
+   * things in front of it are finally on one clock.
+   */
+  sample(alpha) {
+    const a = alpha < 0 ? 0 : alpha > 1 ? 1 : alpha;
+    this.drawX = this.prevX + (this.x - this.prevX) * a;
+    this.drawY = this.prevY + (this.y - this.prevY) * a;
+    const vh = this.prevViewHeight + (this.viewHeight - this.prevViewHeight) * a;
+    const punch = this.prevPunchFactor + (this.punchFactor - this.prevPunchFactor) * a;
+    this.drawViewHeight = vh * punch;
+    this.drawScale = this.viewport.h / this.drawViewHeight;
+    this.drawViewWidth = this.drawViewHeight * (this.viewport.w / this.viewport.h);
+  }
+  reset(x, y, mass) {
+    this.x = x;
+    this.y = y;
+    this.viewHeight = this.targetViewHeight(mass);
+    this.shake = 0;
+    this.punch = 0;
+    this.punchTimer = 0;
+    this.punchDuration = LIVE.camera.tierPunchMs / 1e3;
+    this.prevX = this.x;
+    this.prevY = this.y;
+    this.prevViewHeight = this.viewHeight;
+    this.punchFactor = 1;
+    this.prevPunchFactor = 1;
+    this.sample(1);
+  }
+  targetViewHeight(mass) {
+    return viewHeightFor(mass, this.userZoom);
+  }
+  bump(amount) {
+    this.shake = Math.max(this.shake, amount);
+  }
+  tierPunch() {
+    this.punchTimer = LIVE.camera.tierPunchMs / 1e3;
+    this.punchDuration = this.punchTimer;
+    this.punch = LIVE.camera.tierPunch;
+  }
+  /**
+   * Pull back for a moment. Used by the breach: leaving the water is the one
+   * time the player wants to see MORE sky than fish, and a camera that stays
+   * glued at the same distance makes the biggest move in the game look small.
+   * Same machinery as the tier punch, different amount and duration.
+   */
+  widen(amount, seconds) {
+    if (this.punchTimer > 0 && this.punch > amount) return;
+    this.punchTimer = seconds;
+    this.punchDuration = seconds;
+    this.punch = amount;
+  }
+  step(dt, px, py, heading, mass) {
+    this.prevX = this.x;
+    this.prevY = this.y;
+    this.prevViewHeight = this.viewHeight;
+    this.prevPunchFactor = this.punchFactor;
+    const c = LIVE.camera;
+    const target = this.targetViewHeight(mass);
+    if (this.punchTimer > 0) {
+      this.punchTimer -= dt;
+      const t = clamp(this.punchTimer / Math.max(1e-3, this.punchDuration), 0, 1);
+      this.punchFactor = lerp(1, this.punch, t);
+    } else {
+      this.punchFactor = 1;
+    }
+    this.viewHeight = damp(this.viewHeight, target, 3.2, dt);
+    const lead = this.viewHeight * c.lead;
+    let tx = px + Math.cos(heading) * lead;
+    let ty = py + Math.sin(heading) * lead;
+    const o = LIVE.ocean;
+    const halfW = this.viewWidth / 2;
+    const halfH = this.viewHeight / 2;
+    const marginTop = Math.min(halfH * 0.95, this.viewHeight * 0.45);
+    const marginBottom = Math.min(halfH, this.viewHeight * 0.18);
+    if (this.viewWidth >= o.width) tx = 0;
+    else tx = clamp(tx, -o.width / 2 + halfW, o.width / 2 - halfW);
+    const lo = -marginTop + halfH;
+    const hi = o.depth + marginBottom - halfH;
+    ty = hi > lo ? clamp(ty, lo, hi) : o.depth / 2;
+    this.x = damp(this.x, tx, c.follow, dt);
+    this.y = damp(this.y, ty, c.follow, dt);
+    this.shake = damp(this.shake, 0, 9, dt);
+  }
+  /** World units per CSS pixel. */
+  get scale() {
+    return this.viewport.h / this.viewHeight;
+  }
+  get viewWidth() {
+    return this.viewHeight * (this.viewport.w / this.viewport.h);
+  }
+  get halfDiagonal() {
+    const w = this.viewWidth / 2;
+    const h = this.viewHeight / 2;
+    return Math.sqrt(w * w + h * h);
+  }
+  adjustZoom(delta) {
+    const [lo, hi] = LIVE.camera.zoomRange;
+    this.userZoom = clamp(this.userZoom * (1 + delta), lo, hi);
+  }
+  setZoom(z) {
+    const [lo, hi] = LIVE.camera.zoomRange;
+    this.userZoom = clamp(z, lo, hi);
+  }
+};
+
+// ../src/game/types.ts
+var Kind = {
+  Crumb: 0,
+  Fish: 1
+};
+var Role = {
+  /** Wanders, never threatens. Chain fodder. */
+  Drifter: 0,
+  /** Moves as part of a school. */
+  Schooler: 1,
+  /** Wanders, but is or may become lethal. */
+  Prowler: 2,
+  /** Actively hunts the player (tier 5+). */
+  Hunter: 3,
+  /** Starts still near the edge of view, strikes once. */
+  Ambusher: 4,
+  /** Lives above the waterline. Dives. Cannot be eaten at any size. */
+  Bird: 5
+};
+var Threat = {
+  Edible: 0,
+  Standoff: 1,
+  Lethal: 2
+};
+
 // ../src/game/species.ts
 var LETHAL_SPECIES = [2, 3, 4];
 var EDIBLE_SPECIES = [0, 1, 5];
 
 // ../src/game/ocean.ts
+var BAND_NAMES = ["the surface", "the shallows", "the deep", "the black"];
 function depthFraction(y) {
   return clamp(y / LIVE.ocean.depth, 0, 1);
 }
@@ -1138,6 +1513,9 @@ function bandAt(y) {
   if (d < b.shallows) return 1 /* Shallows */;
   if (d < b.deep) return 2 /* Deep */;
   return 3 /* Black */;
+}
+function bandLabel(band) {
+  return BAND_NAMES[band] ?? BAND_NAMES[0];
 }
 function scoreMultiplierAt(y) {
   const o = LIVE.ocean;
@@ -1188,6 +1566,44 @@ var Director = class _Director {
     this.timer -= dt;
     if (this.timer > 0) return;
     this.timer = LIVE.director.rebalanceMs / 1e3;
+    this.rebalance(ctx);
+  }
+  /**
+   * Is a restock due? The arena asks, because in a shared room the answer has
+   * to be acted on for EVERY player rather than for whoever the round robin
+   * happened to land on. See `restock`.
+   */
+  due(dt, ctx) {
+    this.cull(ctx);
+    this.timer -= dt;
+    if (this.timer > 0) return false;
+    this.timer = LIVE.director.rebalanceMs / 1e3;
+    return true;
+  }
+  /**
+   * Restock around one player, without touching the timer.
+   *
+   * MEASURED, round 26 — fish on each player's own screen, everyone the same
+   * size, spread across the ocean:
+   *
+   *     players    1     2      4          8              16
+   *     on screen  18    6 11   3 3 5 8    0 2 3 4 4 5 5 6    4..14
+   *
+   * A player alone saw eighteen. In a room of eight, the median was four and
+   * one player had NOTHING on screen. The room's ocean was emptying as people
+   * joined, which is a strange enough thing to happen that nobody looked for
+   * it: every multiplayer test ever run on this had a single player in it.
+   *
+   * The cause was the round robin. Culling ran every tick for everyone, but the
+   * restock ran on a 500ms timer for whichever ONE player the cursor was
+   * pointing at — so in a room of eight each player's water was topped up about
+   * once every four seconds while being culled twenty times a second.
+   *
+   * Restocking is O(entities) and fires twice a second, so doing it for every
+   * player costs a few thousand comparisons a second in a room of eight. That
+   * is nothing, and it was never the expensive part; the cull was.
+   */
+  restock(ctx) {
     this.rebalance(ctx);
   }
   static classify(mass, pmass) {
@@ -2133,10 +2549,8 @@ var Arena = class {
    * The director fills the water around ONE player per tick, round robin, so
    * every region of a busy room stays stocked without doing the work N times.
    */
-  runDirector(dt, alive) {
-    if (alive.length === 0) return;
-    this.cursor = (this.cursor + 1) % alive.length;
-    const focus = alive[this.cursor];
+  /** Aim the director's context at one player, without restocking yet. */
+  aimAt(focus) {
     const p = focus.player;
     this.dir.px = p.x;
     this.dir.py = p.y;
@@ -2144,19 +2558,24 @@ var Arena = class {
     this.dir.pheading = p.heading;
     this.dir.camX = p.x;
     this.dir.camY = p.y;
-    const viewH = LIVE.camera.viewHeightAtStart * Math.pow(p.mass / LIVE.player.startMass, LIVE.camera.viewMassExp);
+    const viewH = viewHeightFor(p.mass);
     const viewW = viewH * 0.5;
     this.dir.viewHeight = viewH;
     this.dir.viewHalfH = viewH / 2;
     this.dir.viewHalfW = viewW / 2;
     this.dir.viewHalfDiag = Math.hypot(viewW, viewH) / 2;
     this.dir.runTime = this.time - focus.joinedAt;
+  }
+  runDirector(dt, alive) {
+    if (alive.length === 0) return;
+    this.cursor = (this.cursor + 1) % alive.length;
+    this.aimAt(alive[this.cursor]);
     const keep = this.dir.keepAlive;
     keep.length = 0;
     let surface = false;
     for (let i = 0; i < alive.length; i++) {
       const q = alive[i].player;
-      const vh = LIVE.camera.viewHeightAtStart * Math.pow(q.mass / LIVE.player.startMass, LIVE.camera.viewMassExp);
+      const vh = viewHeightFor(q.mass);
       const keepRadius = Math.hypot(vh * 0.5, vh) / 2 * LIVE.director.cullRing;
       if (i < this.keepPool.length) {
         this.keepPool[i].x = q.x;
@@ -2173,7 +2592,13 @@ var Arena = class {
       LIVE.director.arenaMaxEntities,
       LIVE.director.arenaEntitiesPerPlayer * alive.length
     );
-    this.director.step(dt, this.dir);
+    if (this.director.due(dt, this.dir)) {
+      for (const entry of alive) {
+        this.aimAt(entry);
+        this.director.restock(this.dir);
+      }
+      this.aimAt(alive[this.cursor]);
+    }
     this.director.visitorArrived = null;
   }
   /** What one player is allowed to know: what is near them, and nothing else. */
@@ -2258,7 +2683,26 @@ var BLOCKED = [
   "whore",
   "slut",
   "pedo",
-  "kys"
+  "kys",
+  /**
+   * ROUND 25: the all-time board changed what a name costs.
+   *
+   * A name in a lobby is gone when the room empties. A name on the all-time
+   * board sits on jayo's page, at the top, under his song, for as long as
+   * nobody beats it — so the list widens from slurs to the words that would be
+   * embarrassing there.
+   *
+   * Still short, and still chosen to avoid eating real names: no `cock`
+   * (Cockburn, peacock), no `dick` (a name), no `cum` (Cumberland), no `sex`
+   * (Sexton). The pattern lets letters repeat, so each of these also catches
+   * its padded forms.
+   */
+  "fuck",
+  "shit",
+  "bitch",
+  "wanker",
+  "asshole",
+  "porn"
 ];
 var PATTERNS = BLOCKED.map((word) => new RegExp([...word].map((c) => `${c}+`).join("")));
 function isBlockedName(raw) {
@@ -2277,6 +2721,692 @@ function cleanDisplayName(raw) {
 function anonymousName() {
   return `fish${Math.floor(Math.random() * 900 + 100)}`;
 }
+
+// ../src/game/tiers.ts
+var info = {
+  index: 0,
+  name: "fry",
+  predators: false,
+  schools: false,
+  hunt: false,
+  ambush: false,
+  nextThreshold: 25,
+  overflow: 0
+};
+function tierFor(mass) {
+  const t = LIVE.tiers;
+  const last = t.length - 1;
+  let i = 0;
+  for (let k = t.length - 1; k >= 0; k--) {
+    if (mass >= t[k].mass) {
+      i = k;
+      break;
+    }
+  }
+  info.index = i;
+  info.overflow = 0;
+  info.nextThreshold = i < last ? t[i + 1].mass : t[last].mass * 2.5;
+  const row = t[info.index];
+  info.name = row.name;
+  info.predators = row.predators;
+  info.schools = row.schools;
+  info.hunt = row.hunt;
+  info.ambush = row.ambush;
+  return info;
+}
+function tierId(mass) {
+  const t = tierFor(mass);
+  return t.index + t.overflow;
+}
+
+// ../src/game/objectives.ts
+var POOL = [
+  (rng) => {
+    const n = rng.int(18, 34);
+    return { id: "eat", text: `eat ${n} fish`, target: n, read: (p) => p.bites };
+  },
+  (rng) => {
+    const n = rng.int(6, 12);
+    return { id: "chain", text: `chain ${n} in a row`, target: n, read: (p) => p.bestChain };
+  },
+  (rng) => {
+    const n = rng.int(2, 4);
+    return { id: "tier", text: `reach tier ${n + 1}`, target: n, read: (_p, tier) => tier };
+  },
+  (rng) => {
+    const n = rng.int(45, 80);
+    return { id: "survive", text: `survive ${n} seconds`, target: n, read: (p) => Math.floor(p.elapsed) };
+  },
+  (rng) => {
+    const n = rng.int(120, 320);
+    return { id: "size", text: `get to size ${n}`, target: n, read: (p) => Math.floor(p.peakMass) };
+  },
+  () => ({ id: "frenzy", text: "trigger a frenzy", target: 1, read: (p) => p.frenzy ? 1 : p.bestChain >= 10 ? 1 : 0 })
+];
+function rollObjectives(rng, count = 3) {
+  const picks = [];
+  const used = /* @__PURE__ */ new Set();
+  let guard = 0;
+  while (picks.length < count && guard++ < 50) {
+    const t = POOL[rng.int(0, POOL.length - 1)](rng);
+    if (used.has(t.id)) continue;
+    used.add(t.id);
+    picks.push({ ...t, progress: 0, done: false });
+  }
+  return picks;
+}
+function updateObjectives(list, p, tier) {
+  let completed = null;
+  for (const o of list) {
+    if (o.done) continue;
+    o.progress = Math.min(o.target, o.read(p, tier));
+    if (o.progress >= o.target) {
+      o.done = true;
+      (completed ??= []).push(o);
+    }
+  }
+  return completed ?? EMPTY;
+}
+var EMPTY = [];
+
+// ../src/game/world.ts
+var DEATH_CAUSES = {
+  0: "a drifter",
+  1: "a school",
+  2: "a prowler",
+  3: "a hunter",
+  4: "an ambush"
+};
+var World = class {
+  pool = new EntityPool(LIVE.director.maxEntities + 24);
+  hash = new SpatialHash(180);
+  director = new Director();
+  player = new Player();
+  rng = new Rng();
+  events = [];
+  /** Three per run. Something to aim at besides the score. */
+  objectives = [];
+  tier = 0;
+  runTime = 0;
+  /** Nearest lethal entity this step, for the HUD's threat readout. */
+  nearestThreatDist = Infinity;
+  /**
+   * Where the thing that killed you was, at the moment it killed you. Used by
+   * the fairness audit ("nobody dies to a predator that was never visible")
+   * and, in phase 5, by the share card's cause-of-death line.
+   */
+  lastKiller = { x: 0, y: 0, role: 0, mass: 0, distance: 0, trackedFor: 0 };
+  /** Deepest band the player reached this run, for the death card. */
+  deepestBand = 0;
+  /** The ocean's depth, exposed so tooling does not have to hardcode it. */
+  oceanDepth = LIVE.ocean.depth;
+  /** The seed this run was built from. Recorded, shared and replayed. */
+  seed = 0;
+  /**
+   * The input log: the player's requested heading, quantised to a byte, once per
+   * simulation step. At 60Hz a three-minute run is about 11KB before
+   * compression, and it only ever leaves the device attached to a submitted
+   * score.
+   *
+   * A fixed-size buffer, because nothing in a run may allocate. A run longer
+   * than the buffer simply stops recording — the score is then unverifiable and
+   * the server can reject it, which is the correct failure.
+   */
+  inputLog = new Uint8Array(LIVE.run.inputLogSteps);
+  /**
+   * Boost, one BIT per step, packed eight to a byte. It is half the input —
+   * boost changes speed and burns mass — and a log without it replays a
+   * different run from the one that was played.
+   */
+  boostLog = new Uint8Array(Math.ceil(LIVE.run.inputLogSteps / 8));
+  inputCount = 0;
+  /**
+   * The screen's aspect ratio, which the DIRECTOR reads: view height is derived
+   * from mass alone, but the spawn ring and the cull radius are measured
+   * against the view's half-diagonal, and that depends on how wide the screen
+   * is. A replay has to be given the same shape of window or it fills a
+   * different ocean.
+   *
+   * Set from `viewport.w / viewport.h` DIRECTLY by the engine, never
+   * re-derived from a ViewInfo: `(viewHeight * (w/h)) / viewHeight` is not
+   * exactly `w/h` in floating point, and an ULP of difference on step one is a
+   * different run by step nine thousand. The replay sets w = aspect and h = 1
+   * so the division hands back the identical double.
+   */
+  aspect = 0.5;
+  /**
+   * False once anything has happened that the log cannot describe — the window
+   * changed shape mid-run, or the run outlasted the buffer. An unverifiable run
+   * is still a run; it just cannot go on a leaderboard, and saying so is better
+   * than posting a number nobody can check.
+   */
+  verifiable = true;
+  /** Points banked. Depth multiplies what a bite is worth, so it is tracked live. */
+  banked = 0;
+  ai = {
+    px: 0,
+    py: 0,
+    pmass: 0,
+    pradius: 0,
+    pspeed: 0,
+    viewHalfDiag: 600,
+    hash: this.hash,
+    rng: this.rng,
+    dt: 0,
+    runTime: 0,
+    telegraphed: false,
+    telegraphX: 0,
+    telegraphY: 0
+  };
+  dir = {
+    pool: this.pool,
+    rng: this.rng,
+    px: 0,
+    py: 0,
+    pmass: 0,
+    pheading: 0,
+    camX: 0,
+    camY: 0,
+    viewHalfDiag: 600,
+    viewHalfW: 300,
+    viewHalfH: 400,
+    viewHeight: LIVE.camera.viewHeightAtStart,
+    runTime: 0,
+    // One fish, so one point of interest. Reused, never reallocated per frame.
+    keepAlive: [{ x: 0, y: 0, keepRadius: 900 }],
+    surfaceOccupied: false,
+    maxEntities: LIVE.director.maxEntities
+  };
+  reset(seed, view) {
+    this.seed = seed ?? Date.now() >>> 0;
+    this.rng = new Rng(this.seed);
+    this.inputCount = 0;
+    this.boostLog.fill(0);
+    this.verifiable = true;
+    this.ai.rng = this.rng;
+    this.dir.rng = this.rng;
+    this.pool.releaseAll();
+    this.player.reset();
+    this.director.reset();
+    this.events.length = 0;
+    this.objectives = rollObjectives(this.rng);
+    this.tier = 0;
+    this.deepestBand = 0;
+    this.banked = 0;
+    this.runTime = 0;
+    this.nearestThreatDist = Infinity;
+    this.syncDirector(view);
+    this.director.seed(this.dir);
+  }
+  syncDirector(view) {
+    const p = this.player;
+    this.dir.px = p.x;
+    this.dir.py = p.y;
+    this.dir.pmass = p.mass;
+    this.dir.pheading = p.heading;
+    this.dir.runTime = this.runTime;
+    this.dir.surfaceOccupied = bandAt(p.y) <= 1 /* Shallows */;
+    if (view) {
+      this.dir.camX = view.camX;
+      this.dir.camY = view.camY;
+      this.dir.viewHalfDiag = view.halfDiag;
+      this.dir.viewHalfW = view.halfW;
+      this.dir.viewHalfH = view.halfH;
+      this.dir.viewHeight = view.viewHeight;
+    }
+    this.dir.keepAlive[0].x = p.x;
+    this.dir.keepAlive[0].y = p.y;
+    this.dir.keepAlive[0].keepRadius = this.dir.viewHalfDiag * LIVE.director.cullRing;
+  }
+  step(dt, view, sensitivity) {
+    const p = this.player;
+    if (!p.alive) return;
+    this.runTime += dt;
+    if (this.inputCount < this.inputLog.length) {
+      const h = (p.desiredHeading % TAU + TAU) % TAU;
+      const byte = Math.min(255, Math.round(h / TAU * 256)) & 255;
+      const i = this.inputCount++;
+      this.inputLog[i] = byte;
+      if (p.boosting) this.boostLog[i >> 3] |= 1 << (i & 7);
+      p.desiredHeading = byte / 256 * TAU;
+    } else {
+      this.verifiable = false;
+    }
+    if (p.airborne) {
+      const impact = p.speed;
+      if (p.stepAir(dt)) this.events.push({ type: "splash", x: p.x, y: 0, speed: impact });
+      const halfW = LIVE.ocean.width / 2;
+      p.x = Math.max(-halfW + p.radius, Math.min(halfW - p.radius, p.x));
+    } else {
+      p.step(dt, view.viewHeight, sensitivity);
+      if (p.y < p.radius * 0.35 && Math.sin(p.heading) < -LIVE.ocean.breachMinUp) {
+        p.beginBreach();
+        this.events.push({ type: "breach", x: p.x, y: 0, heading: p.heading, speed: p.speed });
+      } else {
+        const hit = clampToWorld(p, p.radius);
+        p.atSurface = hit.hitSurface;
+      }
+    }
+    const band = bandAt(p.y);
+    if (band > this.deepestBand) this.deepestBand = band;
+    this.hash.setCellSize(Math.max(140, p.radius * 2.4));
+    this.hash.clear();
+    const items = this.pool.items;
+    for (let i = 0; i < items.length; i++) {
+      const e = items[i];
+      if (e.active) this.hash.insert(e);
+    }
+    this.ai.px = p.x;
+    this.ai.py = p.y;
+    this.ai.pmass = p.mass;
+    this.ai.pradius = p.radius;
+    this.ai.pspeed = speedFor(p.mass, view.viewHeight);
+    this.ai.viewHalfDiag = view.halfDiag;
+    this.ai.dt = dt;
+    this.ai.runTime = this.runTime;
+    this.ai.telegraphed = false;
+    const indicatorRange = view.halfDiag * LIVE.render.indicatorRange;
+    const indicatorRange2 = indicatorRange * indicatorRange;
+    for (let i = 0; i < items.length; i++) {
+      const e = items[i];
+      if (!e.active) continue;
+      if (e.dying > 0) {
+        e.dying -= dt * 6;
+        if (e.dying <= 0) this.pool.release(e);
+        continue;
+      }
+      e.threat = Director.classify(e.mass, p.mass);
+      if (e.role === Role.Bird) e.threat = Threat.Lethal;
+      {
+        const dx = e.x - view.camX;
+        const dy = e.y - view.camY;
+        if (dx * dx + dy * dy < indicatorRange2) {
+          if (this.runTime - e.seen > 0.15) e.seenSince = this.runTime;
+          e.seen = this.runTime;
+        }
+      }
+      stepEntity(e, this.ai);
+      if (e.role !== Role.Bird) clampDepth(e, e.radius * 0.5);
+    }
+    if (this.ai.telegraphed) {
+      this.events.push({ type: "threat-near", x: this.ai.telegraphX, y: this.ai.telegraphY });
+    }
+    this.collide(dt);
+    this.syncDirector(view);
+    this.director.step(dt, this.dir);
+    if (this.director.visitorArrived) {
+      this.events.push({ type: "visitor", name: this.director.visitorArrived });
+      this.director.visitorArrived = null;
+    }
+    for (const done of updateObjectives(this.objectives, p, this.tier)) {
+      this.events.push({ type: "objective", text: done.text });
+    }
+    const t = tierId(p.mass);
+    if (t > this.tier) {
+      this.tier = t;
+      const info2 = tierFor(p.mass);
+      this.events.push({
+        type: "tier-up",
+        tier: t,
+        name: info2.overflow > 0 ? "the pond opens" : info2.name
+      });
+    } else if (t < this.tier) {
+      this.tier = t;
+    }
+  }
+  collide(dt) {
+    const p = this.player;
+    const eat = LIVE.eat;
+    const mouth = p.radius * eat.mouthRadiusScale;
+    const reach = mouth + p.radius * eat.coneBonus;
+    const scanR = Math.max(reach, p.radius * eat.magnetRange) * 1.35 + p.radius * 2;
+    const n = this.hash.query(p.x, p.y, scanR);
+    let nearestLethal = Infinity;
+    for (let i = 0; i < n; i++) {
+      const e = this.hash.result[i];
+      if (!e.active || e.dying > 0) continue;
+      const dx = e.x - p.x;
+      const dy = e.y - p.y;
+      const d = Math.hypot(dx, dy);
+      if (p.airborne && e.role === Role.Bird && e.dying <= 0) {
+        if (d < p.radius + e.radius * 0.5 * 1.25 && p.mass >= LIVE.ocean.breachKillMass) {
+          this.banked += e.mass * LIVE.ocean.breachKillScore;
+          this.events.push({ type: "bird-kill", x: e.x, y: e.y, mass: e.mass });
+          e.dying = 1;
+          e.eatenByX = e.x;
+          e.eatenByY = e.y;
+          continue;
+        }
+      }
+      if (p.airborne && e.role !== Role.Bird) continue;
+      if (e.threat === Threat.Lethal) {
+        const gap = d - (p.radius + e.radius);
+        if (gap < nearestLethal) nearestLethal = gap;
+      }
+      const edible = e.threat === Threat.Edible;
+      if (edible) {
+        const angle = Math.abs(
+          Math.atan2(Math.sin(Math.atan2(dy, dx) - p.heading), Math.cos(Math.atan2(dy, dx) - p.heading))
+        );
+        const inCone = angle < eat.coneHalfAngle;
+        const hitR = (inCone ? reach : mouth) + e.radius;
+        if (d < hitR) {
+          this.consume(e);
+          continue;
+        }
+        if (d < mouth * eat.magnetRange) {
+          const pull = eat.magnetPull * (1 - d / (mouth * eat.magnetRange)) * dt;
+          e.x -= dx / (d || 1) * pull;
+          e.y -= dy / (d || 1) * pull;
+        }
+        continue;
+      }
+      if (e.threat === Threat.Lethal) {
+        const eRadius = e.role === Role.Bird ? e.radius * 0.5 : e.radius;
+        const hitR = p.radius * 0.84 + eRadius * eat.predatorHitboxScale;
+        if (e.role === Role.Bird && e.lunge <= 0) continue;
+        if (d < hitR && e.role === Role.Bird) {
+          if (p.mass < LIVE.ocean.birdSurvivalMass) {
+            this.lastKiller.x = e.x;
+            this.lastKiller.y = e.y;
+            this.lastKiller.role = e.role;
+            this.lastKiller.mass = e.mass;
+            this.lastKiller.trackedFor = e.seenSince >= 0 ? this.runTime - e.seenSince : 0;
+            this.kill("a bird");
+            return;
+          }
+          if (p.mass >= e.mass * LIVE.ocean.birdEdibleRatio) {
+            this.consume(e);
+            this.banked += e.mass * (LIVE.ocean.birdKillScore - 1) * scoreMultiplierAt(p.y);
+            this.events.push({ type: "bird-kill", x: e.x, y: e.y, mass: e.mass });
+            continue;
+          }
+          p.mass = Math.max(1, p.mass * (1 - LIVE.ocean.birdBite));
+          p.radius = radiusFor(p.mass);
+          e.lunge = 0;
+          e.telegraph = 0;
+          e.stateTimer = 6;
+          this.events.push({ type: "bird-hit", x: e.x, y: e.y });
+          continue;
+        }
+        if (d < hitR) {
+          this.lastKiller.x = e.x;
+          this.lastKiller.y = e.y;
+          this.lastKiller.role = e.role;
+          this.lastKiller.mass = e.mass;
+          this.lastKiller.distance = d;
+          this.lastKiller.trackedFor = e.seenSince >= 0 ? this.runTime - e.seenSince : 0;
+          this.kill(DEATH_CAUSES[e.role] ?? "something bigger");
+          return;
+        }
+      }
+    }
+    const all = this.pool.items;
+    for (let i = 0; i < all.length; i++) {
+      const b = all[i];
+      if (!b.active || b.role !== Role.Bird || b.lunge <= 0 || b.hunting <= 0) continue;
+      const hits = this.hash.query(b.x, b.y, b.radius * 0.5 + 240);
+      for (let j = 0; j < hits; j++) {
+        const o = this.hash.result[j];
+        if (!o.active || o.role === Role.Bird || o.dying > 0) continue;
+        if (o.mass < LIVE.director.birdMinTarget) continue;
+        const bd = Math.hypot(o.x - b.x, o.y - b.y);
+        if (bd > b.radius * 0.5 + o.radius) continue;
+        o.dying = 1;
+        o.eatenByX = b.x;
+        o.eatenByY = b.y;
+        b.hunting = 0;
+        b.lunge = 0;
+        b.stateTimer = LIVE.director.birdRestAfterCatch;
+        this.events.push({ type: "bird-catch", x: o.x, y: o.y, mass: o.mass });
+        break;
+      }
+    }
+    this.nearestThreatDist = nearestLethal;
+  }
+  consume(e) {
+    const p = this.player;
+    const g = LIVE.growth;
+    const nextThreshold = tierFor(p.mass).nextThreshold;
+    const falloff = 1 - g.falloff * Math.min(1, p.mass / nextThreshold);
+    let gain = e.mass * g.bite * falloff;
+    const ratio = Math.max(
+      g.minGainRatio,
+      g.maxGainRatio * Math.min(1, Math.pow(g.gainSoftCapMass / Math.max(1, p.mass), g.gainRatioExp))
+    );
+    gain = Math.min(gain, p.mass * ratio);
+    p.mass += gain;
+    p.radius = radiusFor(p.mass);
+    if (p.mass > p.peakMass) p.peakMass = p.mass;
+    this.banked += e.mass * scoreMultiplierAt(p.y) * p.chainMultiplier;
+    const startedFrenzy = p.registerBite(gain);
+    this.events.push({
+      type: "bite",
+      mass: e.mass,
+      links: p.chainLinks,
+      multiplier: p.chainMultiplier,
+      x: e.x,
+      y: e.y
+    });
+    if (startedFrenzy) this.events.push({ type: "frenzy-start", links: p.chainLinks });
+    e.dying = 1;
+    e.eatenByX = p.x;
+    e.eatenByY = p.y;
+  }
+  kill(cause) {
+    const p = this.player;
+    if (!p.alive) return;
+    p.alive = false;
+    p.causeOfDeath = cause;
+    this.events.push({ type: "death", stats: this.stats() });
+  }
+  stats() {
+    const p = this.player;
+    return {
+      seed: this.seed,
+      // Array.from: RunStats is serialised to JSON, and a typed array is not.
+      inputLog: Array.from(this.inputLog.subarray(0, this.inputCount)),
+      boostLog: Array.from(this.boostLog.subarray(0, this.inputCount + 7 >> 3)),
+      aspect: this.aspect,
+      verifiable: this.verifiable,
+      startedAt: 0,
+      durationMs: Math.round(p.elapsed * 1e3),
+      peakMass: Math.round(p.peakMass * 10) / 10,
+      tier: this.tier,
+      bites: p.bites,
+      bestChain: p.bestChain,
+      // Nerve/gulp was cut, but the Supabase `runs` table still has a `gulps`
+      // column and the insert names it. Always 0 rather than absent.
+      gulps: 0,
+      objectivesDone: this.objectives.filter((o) => o.done).length,
+      objectives: this.objectives.map((o) => ({ text: o.text, done: o.done })),
+      score: p.score(this.banked),
+      causeOfDeath: p.causeOfDeath,
+      // `deepestBand` is a band INDEX; bandName takes a y coordinate. Passing
+      // the index scaled by 1e9 clamped every run to "the black", so the death
+      // card told everybody they had been to the bottom of the ocean.
+      deepest: bandLabel(this.deepestBand)
+    };
+  }
+};
+
+// ../src/game/replay.ts
+var STEP2 = 1 / 60;
+var TAU2 = Math.PI * 2;
+var Replayer = class {
+  world = new World();
+  cam = new Camera();
+  log;
+  boost;
+  i = 0;
+  /** True once the log is exhausted or the fish is dead. */
+  done = false;
+  constructor(run) {
+    this.cam.viewport.w = run.aspect;
+    this.cam.viewport.h = 1;
+    this.cam.viewport.dpr = 1;
+    const startY = LIVE.ocean.depth * LIVE.ocean.startDepth;
+    this.cam.reset(0, startY, LIVE.player.startMass);
+    this.world.aspect = run.aspect;
+    this.world.reset(run.seed, this.view());
+    this.log = run.inputLog;
+    this.boost = run.boostLog;
+    if (this.log.length === 0) this.done = true;
+  }
+  // The engine's own order: the world is stepped with the camera as it was at
+  // the START of the step, then the camera catches up. Anything else runs the
+  // director one step out of phase with the game that was played.
+  view() {
+    const cam = this.cam;
+    return {
+      camX: cam.x,
+      camY: cam.y,
+      halfDiag: cam.halfDiagonal,
+      halfW: cam.viewWidth / 2,
+      halfH: cam.viewHeight / 2,
+      viewHeight: cam.viewHeight
+    };
+  }
+  /** Run up to `budget` more steps. Returns true when there is nothing left. */
+  advance(budget) {
+    const p = this.world.player;
+    const end = Math.min(this.log.length, this.i + budget);
+    for (; this.i < end; this.i++) {
+      if (!p.alive) break;
+      const i = this.i;
+      p.desiredHeading = (this.log[i] ?? 0) / 256 * TAU2;
+      p.boosting = ((this.boost[i >> 3] ?? 0) >> (i & 7) & 1) === 1;
+      this.world.step(STEP2, this.view(), LIVE.player.sensitivity);
+      this.cam.step(STEP2, p.x, p.y, p.heading, p.mass);
+      this.world.events.length = 0;
+    }
+    if (this.i >= this.log.length || !p.alive) this.done = true;
+    return this.done;
+  }
+  /** Steps run so far. Useful for reporting progress on a long verification. */
+  get progress() {
+    return this.i;
+  }
+  result() {
+    const stats = this.world.stats();
+    return {
+      score: stats.score,
+      peakMass: stats.peakMass,
+      tier: stats.tier,
+      bites: stats.bites,
+      durationMs: stats.durationMs,
+      steps: this.i,
+      causeOfDeath: stats.causeOfDeath
+    };
+  }
+};
+
+// src/board.ts
+var SIZE = 20;
+var MAX_STEPS = LIVE.run.inputLogSteps;
+var TOLERANCE = 0.02;
+var RATE_PER_MIN = 6;
+var Board = class {
+  constructor(storage) {
+    this.storage = storage;
+  }
+  storage;
+  rows = [];
+  loaded = false;
+  /** address -> timestamps of recent submissions. Memory only; a restart forgives. */
+  recent = /* @__PURE__ */ new Map();
+  /** Diagnostics: how the submissions that arrived were resolved. */
+  counts = { verified: 0, mismatch: 0, refused: 0, tooLow: 0 };
+  async load() {
+    if (this.loaded) return;
+    const saved = await this.storage.get("rows");
+    if (Array.isArray(saved)) this.rows = saved;
+    this.loaded = true;
+  }
+  async list() {
+    await this.load();
+    return { board: this.rows, counts: this.counts };
+  }
+  /** The score a submission has to beat to be worth checking. */
+  cutoff() {
+    return this.rows.length < SIZE ? 0 : this.rows[this.rows.length - 1]?.score ?? 0;
+  }
+  limited(address, now) {
+    const seen = (this.recent.get(address) ?? []).filter((t) => now - t < 6e4);
+    seen.push(now);
+    this.recent.set(address, seen);
+    if (this.recent.size > 500) {
+      for (const [k, v] of this.recent) {
+        if (v.every((t) => now - t > 6e4)) this.recent.delete(k);
+        if (this.recent.size <= 400) break;
+      }
+    }
+    return seen.length > RATE_PER_MIN;
+  }
+  async submit(body, address, now) {
+    await this.load();
+    const s = body;
+    if (!s || typeof s !== "object") return this.refuse("not a submission");
+    const seed = Number(s.seed);
+    const aspect = Number(s.aspect);
+    const claimed = Number(s.claimed);
+    const inputLog = s.inputLog;
+    const boostLog = s.boostLog;
+    if (!Number.isFinite(seed) || !Number.isFinite(claimed) || claimed <= 0) {
+      return this.refuse("a run needs an ocean and a score");
+    }
+    if (!Number.isFinite(aspect) || aspect < 0.2 || aspect > 5) return this.refuse("impossible window");
+    if (!Array.isArray(inputLog) || !Array.isArray(boostLog)) return this.refuse("no input log");
+    if (inputLog.length === 0) return this.refuse("empty run");
+    if (inputLog.length > MAX_STEPS) return this.refuse("run too long to check");
+    if (boostLog.length < inputLog.length + 7 >> 3) return this.refuse("input log is incomplete");
+    if (this.limited(address, now)) return this.refuse("too many runs too quickly");
+    const cut = this.cutoff();
+    if (claimed <= cut) {
+      this.counts.tooLow++;
+      return { ok: false, reason: "not a top score", cutoff: cut, board: this.rows };
+    }
+    let result;
+    try {
+      const run = { seed, aspect, inputLog, boostLog };
+      const r = new Replayer(run);
+      const slices = Math.ceil(inputLog.length / 1024) + 2;
+      for (let n = 0; n < slices && !r.advance(1024); n++) ;
+      result = r.result();
+    } catch {
+      return this.refuse("that run could not be replayed");
+    }
+    const off = Math.abs(result.score - claimed) / Math.max(1, claimed);
+    if (off > TOLERANCE) {
+      this.counts.mismatch++;
+      return {
+        ok: false,
+        reason: "that run did not check out",
+        cutoff: cut,
+        board: this.rows
+      };
+    }
+    const name = cleanDisplayName(typeof s.name === "string" ? s.name : "") ?? anonymousName();
+    const row = {
+      name,
+      score: result.score,
+      mass: result.peakMass,
+      tier: result.tier,
+      at: now
+    };
+    this.rows.push(row);
+    this.rows.sort((a, b) => b.score - a.score);
+    this.rows = this.rows.slice(0, SIZE);
+    this.counts.verified++;
+    await this.storage.put("rows", this.rows);
+    const rank = this.rows.indexOf(row) + 1;
+    return { ok: rank > 0, rank, score: result.score, board: this.rows };
+  }
+  refuse(reason) {
+    this.counts.refused++;
+    return { ok: false, reason, board: this.rows };
+  }
+};
 
 // src/room.ts
 var TICK_MS = 50;
@@ -2299,7 +3429,35 @@ var ArenaRoom = class {
   emptySince = Date.now();
   /** Diagnostics. Cheap, and the difference between a theory and an answer. */
   ticks = 0;
+  /**
+   * THE ALL-TIME BOARD, in the same class as a room because a Durable Object
+   * namespace can only be created by a migration and the dashboard has no way
+   * to write one. One instance of this class is addressed as 'leaderboard' and
+   * never has a player in it; every other instance is an ocean and never
+   * touches this. Built on first use, so a room pays nothing for it.
+   */
+  allTime = null;
+  theBoard() {
+    if (!this.allTime) this.allTime = new Board(this.state.storage);
+    return this.allTime;
+  }
   async fetch(request) {
+    const path = new URL(request.url).pathname;
+    if (path.endsWith("/board")) {
+      return json(await this.theBoard().list());
+    }
+    if (path.endsWith("/board/score")) {
+      if (request.method !== "POST") return json({ ok: false, reason: "post a run" }, 405);
+      let body = null;
+      try {
+        body = await request.json();
+      } catch {
+        return json({ ok: false, reason: "not a submission" }, 400);
+      }
+      const address = request.headers.get("cf-connecting-ip") ?? "unknown";
+      const verdict = await this.theBoard().submit(body, address, Date.now());
+      return json(verdict);
+    }
     if (request.headers.get("Upgrade") !== "websocket") {
       return new Response(
         JSON.stringify({
@@ -2419,6 +3577,17 @@ var ArenaRoom = class {
     }
   }
 };
+function json(body, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "content-type": "application/json",
+      "access-control-allow-origin": "*",
+      "access-control-allow-headers": "content-type",
+      "access-control-allow-methods": "GET,POST,OPTIONS"
+    }
+  });
+}
 
 // src/index.ts
 function arenaNamespace(env) {
@@ -2463,7 +3632,7 @@ var index_default = {
     const url = new URL(request.url);
     const arena = arenaNamespace(env);
     if (url.pathname === "/health") {
-      return json({
+      return json2({
         ok: arena !== null,
         service: "sfbp-arena",
         durableObject: arena ? "bound" : "MISSING \u2014 add a Durable Object binding to this Worker",
@@ -2471,23 +3640,38 @@ var index_default = {
       });
     }
     if (url.pathname === "/join") {
-      if (!arena) return json({ error: "no durable object binding on this Worker" }, 503);
+      if (!arena) return json2({ error: "no durable object binding on this Worker" }, 503);
       const pick = await pickRoom(arena);
-      if (!pick) return json({ full: true, rooms: ROOMS.length }, 503);
-      return json({ room: pick.room, players: pick.players });
+      if (!pick) return json2({ full: true, rooms: ROOMS.length }, 503);
+      return json2({ room: pick.room, players: pick.players });
+    }
+    if (url.pathname === "/board" || url.pathname === "/board/score") {
+      if (!arena) return json2({ error: "no durable object binding on this Worker" }, 503);
+      if (request.method === "OPTIONS") {
+        return new Response(null, {
+          status: 204,
+          headers: {
+            "access-control-allow-origin": "*",
+            "access-control-allow-headers": "content-type",
+            "access-control-allow-methods": "GET,POST,OPTIONS",
+            "access-control-max-age": "86400"
+          }
+        });
+      }
+      return arena.get(arena.idFromName("leaderboard")).fetch(request);
     }
     const match = url.pathname.match(/^\/room\/([a-z0-9-]{1,32})$/i);
     if (match) {
       if (!arena) {
-        return json({ error: "no durable object binding on this Worker" }, 503);
+        return json2({ error: "no durable object binding on this Worker" }, 503);
       }
       const id = arena.idFromName(match[1].toLowerCase());
       return arena.get(id).fetch(request);
     }
-    return json({ error: "not found", try: ["/health", "/join", "/room/atlantic"] }, 404);
+    return json2({ error: "not found", try: ["/health", "/join", "/board", "/room/atlantic"] }, 404);
   }
 };
-function json(body, status = 200) {
+function json2(body, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json", "access-control-allow-origin": "*" }
