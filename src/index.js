@@ -724,11 +724,35 @@ var TUNING = {
      * now spends its time. The ceiling was brought down to meet the black
      * instead — see `decay.hungerPerSecond`. These numbers are unchanged.
      */
+    /**
+     * THE BOTTOM OF THE BLACK HAS TO OUT-GROW YOU, or the game ends before the
+     * run does.
+     *
+     * Measured (`npm run late`): growth stopped somewhere before 24,633 while
+     * the biggest body in the ocean was 22,000 — and the lethal threshold is
+     * 1.08x your own mass, so nothing could hurt you past 20,370. A player who
+     * got there was invincible for the rest of the run, which is the exact
+     * moment a growth game stops being a game. Anthony's own 9-minute run
+     * reached 7,577, so a 20-30 minute run walks straight into it.
+     *
+     * Raised so that something at the very floor of the ocean still out-masses
+     * the growth plateau: 30,000 against a plateau near 24,600 is 1.22x, clear
+     * of the 1.08x threshold even at the bottom of the jitter range.
+     *
+     * The FLOOR of the band is untouched on purpose, and so is the rule that
+     * this is a property of place rather than of the player. Apex size comes
+     * from where in the band a fish spawns, so raising the ceiling changes only
+     * the deepest water there is; the top of the black is the same as it was.
+     * The alternative — scaling apex mass off the player's own mass — was tried
+     * and removed for good reason, recorded in `Director.massAt`: in a shared
+     * ocean one whale's tick seeds whale-sized monsters that drift into a
+     * beginner.
+     */
     apexMassByBand: [
       [0, 0],
       [0, 0],
       [350, 4200],
-      [4200, 22e3]
+      [4200, 3e4]
     ],
     /** How much an individual apex varies around the size its depth implies. */
     apexMassJitter: [0.72, 1.36],
@@ -872,6 +896,23 @@ var TUNING = {
     loseInterestMs: [2200, 5200],
     /** Seconds before a fish that has given up may lock on to you again. */
     relockDelay: 6,
+    /**
+     * HOW FAR A PREDATOR WILL LEAVE ITS OWN WATER TO CHASE YOU.
+     *
+     * See the long note in `ai.ts`. Measured before this existed: the worst
+     * chase carried a deep-water fish 7,474 units, 69% of the height of a band,
+     * from the deep well into the black. Bands that leak that badly are not a
+     * map, and depth was therefore pure downside with a bonus attached.
+     *
+     * In body radii, with a floor, because the two ends of the game need
+     * different numbers: a small hunter's six radii is only a few hundred units
+     * and would end every chase before it began, while an apex's six radii is
+     * far enough to be a real pursuit. The deep band is 10,880 units tall, so
+     * at these values nothing that lives in the middle of a band can chase you
+     * out of it — which is the property the whole thing is for.
+     */
+    chaseLeashMin: 1600,
+    chaseLeashRadii: 6,
     /**
      * An ambusher's pursuit after its strike, and how long it then lies in wait
      * before it is willing to try again. Without the first number it chased
@@ -2622,6 +2663,13 @@ function stepEntity(e, ctx) {
   const distToPlayer = hypot(dx, dy);
   const toPlayer = atan2(dy, dx);
   const huntRange = ctx.viewHalfDiag * a.huntRangeView;
+  if (e.role !== Role.Bird && e.interest > 0 && e.threat === Threat.Lethal) {
+    const leash = Math.max(a.chaseLeashMin, e.radius * a.chaseLeashRadii);
+    if (Math.abs(e.y - e.homeY) > leash) {
+      e.interest = 0;
+      e.lungeCooldown = Math.max(e.lungeCooldown, a.relockDelay);
+    }
+  }
   if (e.role !== Role.Bird && (e.interest <= 0 || e.threat !== Threat.Lethal)) {
     const drift = e.homeY - e.y;
     if (Math.abs(drift) > e.radius * 6) {
@@ -4094,7 +4142,7 @@ var Board = class {
 };
 
 // src/lib/build.ts
-var BUILD_ID = "r44-ping-and-bugs";
+var BUILD_ID = "r45-the-ocean-bites-back";
 
 // server/src/room.ts
 var TICK_MS = 50;
