@@ -3243,7 +3243,7 @@ function isBlockedName(raw) {
 function cleanDisplayName(raw) {
   const trimmed = (raw ?? "").trim().replace(/\s+/g, " ");
   if (trimmed.length === 0) return null;
-  const stripped = trimmed.replace(/[^\w .-]/g, "").slice(0, 12);
+  const stripped = trimmed.replace(/[^\w .-]/g, "").slice(0, 20);
   if (stripped.trim().length < 2) return null;
   if (isBlockedName(stripped)) return null;
   return stripped;
