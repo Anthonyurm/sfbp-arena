@@ -1089,6 +1089,31 @@ var TUNING = {
   },
   juice: {
     /**
+     * HOW OFTEN THE BOOST SHOVE MAY FIRE, in seconds.
+     *
+     * PLAYTEST, r46: "i more so meant the moving visual like it was a little
+     * glitchy when i boosted."
+     *
+     * Engaging boost fires a kick — a burst out of the tail, a camera bump and
+     * a short lens-in — so that hitting it feels like something happened rather
+     * than like a speed variable changed. That is right for one press. It was
+     * firing on EVERY press, and boost in this genre is not one press: you tap
+     * it to dodge, coast, tap again.
+     *
+     * Measured (`scripts/_boostlag.mjs`), six short bursts the way a player
+     * actually uses it: boost engaged 7 times, the camera was shaking on 243 of
+     * 255 frames and 118 of them were mid lens-punch, bottoming out at a 5.6%
+     * zoom. Between a third and a half of every frame spent boosting was inside
+     * a screen-wide juice effect. Nothing was broken — the simulation ran at
+     * 0.97x with sub-pixel camera motion throughout — it was simply never still.
+     *
+     * A cooldown keeps the shove for a deliberate boost and drops it for the
+     * second and third tap of a manoeuvre, which is one manoeuvre and should
+     * feel like one. The tail burst still fires every time: it is local to the
+     * fish, it reads as thrust, and it is not what was shaking the screen.
+     */
+    boostShoveCooldown: 1.2,
+    /**
      * PLAYTEST: "when I eat fish the game lags still." It was not performance.
      * §8 asks for a 60ms hitstop on a bite, which is exactly right when bites
      * are occasional — but in a bream shoal you eat four or more a second, and
@@ -2210,35 +2235,71 @@ var Director = class _Director {
     }
   }
   /**
+   * IS ANYBODY LOOKING AT THIS FISH?
+   *
+   * `thin` and `thinLethal` exist to relieve ONE player's crowded screen, and
+   * both of them swept the entire shared pool while testing a single camera:
+   * the round-robin focus. So when any player was walled in, every lethal fish
+   * in the ocean that was not on THAT player's screen was released — including
+   * the ones bearing down on everybody else, and including the ones already on
+   * somebody else's screen.
+   *
+   * MEASURED, round 47, by attributing every release to the line that made it,
+   * in a 45-second room with the players held still and spread across the map:
+   *
+   *     players                1        2        8
+   *     thinLethal releases   0.9/s    5.4/s   26.2/s
+   *     median age at death   3.6s     1.6s     1.0s
+   *
+   * A lethal fish may not strike until the player has had it on screen for 1.1
+   * seconds (`ai.minSeenBeforeStrike`). A room of eight was deleting them at a
+   * median age of one second — so the rule could not be satisfied by fish that
+   * no longer existed, and `npm run hunt` read only 31% of them as free to
+   * strike against 74% for a player alone. The busier the ocean, the safer it
+   * got, which is the opposite of the shared room's entire purpose.
+   */
+  watched(ctx, e) {
+    const keep = ctx.keepAlive;
+    for (let k = 0; k < keep.length; k++) {
+      if (Math.abs(e.x - keep[k].x) <= keep[k].seeHalfW && Math.abs(e.y - keep[k].y) <= keep[k].seeHalfH)
+        return true;
+    }
+    return false;
+  }
+  /**
    * Release off-screen bodies that are lethal to this player, until the width
-   * still queued up is back under the cap. On-camera bodies are never touched.
+   * still queued up is back under the cap. On-camera bodies are never touched —
+   * anybody's camera, and only bodies in this player's own neighbourhood are
+   * candidates at all. See `watched`.
    */
   thinLethal(ctx) {
     const items = ctx.pool.items;
-    const halfW = ctx.viewHalfW;
-    const halfH = ctx.viewHalfH;
+    const near = ctx.viewHalfDiag * LIVE.director.cullRing;
+    const near2 = near * near;
     for (let i = 0; i < items.length; i++) {
       const e = items[i];
       if (!e.active || e.dying > 0 || e.role === Role.Bird) continue;
       if (e.threat !== Threat.Lethal) continue;
       const dx = e.x - ctx.camX;
       const dy = e.y - ctx.camY;
-      if (Math.abs(dx) < halfW * 1.15 && Math.abs(dy) < halfH * 1.15) continue;
+      if (dx * dx + dy * dy > near2) continue;
+      if (this.watched(ctx, e)) continue;
       ctx.pool.release(e);
     }
   }
-  /** Retire surplus bodies, furthest offscreen first. */
+  /** Retire surplus bodies from this player's own water, none of them watched. */
   thin(ctx, surplus) {
     const items = ctx.pool.items;
-    const halfW = ctx.viewHalfW;
-    const halfH = ctx.viewHalfH;
+    const near = ctx.viewHalfDiag * LIVE.director.cullRing;
+    const near2 = near * near;
     let removed = 0;
     for (let i = 0; i < items.length && removed < surplus; i++) {
       const e = items[i];
       if (!e.active || e.dying > 0 || e.role === Role.Bird) continue;
       const dx = e.x - ctx.camX;
       const dy = e.y - ctx.camY;
-      if (Math.abs(dx) < halfW && Math.abs(dy) < halfH) continue;
+      if (dx * dx + dy * dy > near2) continue;
+      if (this.watched(ctx, e)) continue;
       ctx.pool.release(e);
       removed++;
     }
@@ -2250,9 +2311,7 @@ var Director = class _Director {
     for (let attempt = 0; attempt < 14; attempt++) {
       const angle = ctx.rng.range(0, TAU2);
       if (avoidForwardCone && ctx.runTime < d.graceMs / 1e3) {
-        const delta = Math.abs(
-          atan2(sin(angle - ctx.pheading), cos(angle - ctx.pheading))
-        );
+        const delta = Math.abs(atan2(sin(angle - ctx.pheading), cos(angle - ctx.pheading)));
         if (delta < d.graceCone) continue;
       }
       const r = ctx.viewHalfDiag * ctx.rng.range(d.spawnRing[0], d.spawnRing[1]);
@@ -2297,6 +2356,7 @@ var Director = class _Director {
     e.homeY = y;
     e.mass = mass;
     e.radius = radiusFor(mass);
+    e.fade = 1;
     e.heading = ctx.rng.range(0, TAU2);
     e.wanderTarget = e.heading;
     e.wanderTimer = ctx.rng.range(a.wanderTurnMs[0], a.wanderTurnMs[1]) / 1e3;
@@ -2313,11 +2373,61 @@ var Director = class _Director {
     e.stateTimer = 0;
     e.interest = 0;
   }
+  /**
+   * PUSH A SPAWN OUT UNTIL ITS BODY CLEARS THE SCREEN TOO.
+   *
+   * PLAYTEST, r45: "near the bottom of the ocean the fish that spawned in
+   * spawned in right next to me. i should not be able to see them spawn in they
+   * should already be there."
+   *
+   * The ring only ever placed a fish's CENTRE off-camera, and the guard in
+   * `spawnPoint` compares that centre against the viewport. A body has width.
+   * At the bottom of the black with a player around mass 7,000 the screen's
+   * half-diagonal is about 2,860, the inner ring sits at 1.1x that — 3,150 —
+   * and an apex there can be 727 units of radius. Its near edge lands at 2,423,
+   * which is 440 units INSIDE the screen. It does not swim in from the dark; it
+   * appears.
+   *
+   * Raising the black's ceiling from 22,000 to 30,000 last round made this
+   * worse (radius 623 -> 727) but did not cause it: at 22,000 the near edge was
+   * already 337 units inside the view. It has always been true at the bottom of
+   * the ocean, where the bodies are biggest — which is exactly where he was.
+   *
+   * Geometry only, no second dice roll: the mass is already chosen by the time
+   * we know the radius, and re-drawing a position here would change the order
+   * of the random stream and with it every replay the leaderboard has verified.
+   * The point is slid along the ray it was already on until the whole body is
+   * past the edge of the screen.
+   */
+  clearBody(ctx, p, radius) {
+    const o = LIVE.ocean;
+    const needW = ctx.viewHalfW + radius;
+    const needH = ctx.viewHalfH + radius;
+    let dx = p.x - ctx.camX;
+    let dy = p.y - ctx.camY;
+    if (Math.abs(dx) > needW || Math.abs(dy) > needH) return p;
+    const dist = Math.max(1e-6, hypot(dx, dy));
+    const ux = dx / dist;
+    const uy = dy / dist;
+    const tx = Math.abs(ux) > 1e-6 ? needW / Math.abs(ux) : Infinity;
+    const ty = Math.abs(uy) > 1e-6 ? needH / Math.abs(uy) : Infinity;
+    const t = Math.min(tx, ty) + Math.max(70, radius * 0.25);
+    dx = ux * t;
+    dy = uy * t;
+    let y = ctx.camY + dy;
+    if (y < radius || y > o.depth - radius) {
+      y = clamp(ctx.camY + dy, radius, o.depth - radius);
+      const room = needW + radius;
+      return { x: ctx.camX + (ux >= 0 ? room : -room), y };
+    }
+    return { x: ctx.camX + dx, y };
+  }
   /** Whatever lives at the depth this lands at. */
   spawnResident(ctx, forceSmall) {
-    const p = this.spawnPoint(ctx, true);
-    if (!p) return 0;
-    const mass = this.massAt(ctx, p.y, forceSmall);
+    const found = this.spawnPoint(ctx, true);
+    if (!found) return 0;
+    const mass = this.massAt(ctx, found.y, forceSmall);
+    const p = this.clearBody(ctx, found, radiusFor(mass));
     const band = bandAt(p.y);
     if (!forceSmall && band <= 1 /* Shallows */ && mass < 12 && ctx.rng.chance(0.45)) {
       return this.spawnSchool(ctx, p.x, p.y, mass);
@@ -2344,14 +2454,16 @@ var Director = class _Director {
     for (let i = 0; i < n; i++) {
       const e = ctx.pool.spawn();
       if (!e) return made;
-      this.init(
-        e,
+      const m = mass * ctx.rng.range(0.85, 1.15);
+      const at = this.clearBody(
         ctx,
-        x + ctx.rng.range(-spread, spread),
-        y + ctx.rng.range(-spread, spread),
-        mass * ctx.rng.range(0.85, 1.15),
-        Role.Schooler
+        {
+          x: x + ctx.rng.range(-spread, spread),
+          y: y + ctx.rng.range(-spread, spread)
+        },
+        radiusFor(m)
       );
+      this.init(e, ctx, at.x, at.y, m, Role.Schooler);
       e.schoolId = id;
       made++;
     }
@@ -3043,10 +3155,7 @@ var Arena = class {
         const edible = threat === Threat.Edible && e.role !== Role.Bird;
         if (edible) {
           const angle = Math.abs(
-            atan2(
-              sin(atan2(dy, dx) - p.heading),
-              cos(atan2(dy, dx) - p.heading)
-            )
+            atan2(sin(atan2(dy, dx) - p.heading), cos(atan2(dy, dx) - p.heading))
           );
           const hitR = (angle < eat.coneHalfAngle ? reach : mouth) + e.radius;
           if (d < hitR) {
@@ -3147,13 +3256,18 @@ var Arena = class {
     for (let i = 0; i < alive.length; i++) {
       const q = alive[i].player;
       const vh = viewHeightFor(q.mass);
-      const keepRadius = hypot(vh * 0.5, vh) / 2 * LIVE.director.cullRing;
+      const halfDiag = hypot(vh * 0.5, vh) / 2;
+      const keepRadius = halfDiag * LIVE.director.cullRing;
+      const seeHalfW = vh * 0.5 * 1.15 / 2;
+      const seeHalfH = vh * 1.15 / 2;
       if (i < this.keepPool.length) {
         this.keepPool[i].x = q.x;
         this.keepPool[i].y = q.y;
         this.keepPool[i].keepRadius = keepRadius;
+        this.keepPool[i].seeHalfW = seeHalfW;
+        this.keepPool[i].seeHalfH = seeHalfH;
       } else {
-        this.keepPool.push({ x: q.x, y: q.y, keepRadius });
+        this.keepPool.push({ x: q.x, y: q.y, keepRadius, seeHalfW, seeHalfH });
       }
       keep.push(this.keepPool[i]);
       if (bandAt(q.y) <= 1 /* Shallows */) surface = true;
@@ -3354,13 +3468,23 @@ var POOL = [
   },
   (rng) => {
     const n = rng.int(45, 80);
-    return { id: "survive", text: `survive ${n} seconds`, target: n, read: (p) => Math.floor(p.elapsed) };
+    return {
+      id: "survive",
+      text: `survive ${n} seconds`,
+      target: n,
+      read: (p) => Math.floor(p.elapsed)
+    };
   },
   (rng) => {
     const n = rng.int(120, 320);
     return { id: "size", text: `get to size ${n}`, target: n, read: (p) => Math.floor(p.peakMass) };
   },
-  () => ({ id: "frenzy", text: "trigger a frenzy", target: 1, read: (p) => p.frenzy ? 1 : p.bestChain >= 10 ? 1 : 0 })
+  () => ({
+    id: "frenzy",
+    text: "trigger a frenzy",
+    target: 1,
+    read: (p) => p.frenzy ? 1 : p.bestChain >= 10 ? 1 : 0
+  })
 ];
 function rollObjectives(rng, count = 3) {
   const picks = [];
@@ -3494,7 +3618,7 @@ var World = class {
     viewHeight: LIVE.camera.viewHeightAtStart,
     runTime: 0,
     // One fish, so one point of interest. Reused, never reallocated per frame.
-    keepAlive: [{ x: 0, y: 0, keepRadius: 900 }],
+    keepAlive: [{ x: 0, y: 0, keepRadius: 900, seeHalfW: 350, seeHalfH: 700 }],
     surfaceOccupied: false,
     maxEntities: LIVE.director.maxEntities
   };
@@ -3539,6 +3663,8 @@ var World = class {
     this.dir.keepAlive[0].x = p.x;
     this.dir.keepAlive[0].y = p.y;
     this.dir.keepAlive[0].keepRadius = this.dir.viewHalfDiag * LIVE.director.cullRing;
+    this.dir.keepAlive[0].seeHalfW = this.dir.viewHalfW * 1.15;
+    this.dir.keepAlive[0].seeHalfH = this.dir.viewHalfH * 1.15;
   }
   step(dt, view, sensitivity) {
     const p = this.player;
@@ -3890,7 +4016,7 @@ function fnv1a(s) {
   }
   return (h >>> 0).toString(36);
 }
-var SIM_REVISION = "r43-detmath";
+var SIM_REVISION = "r47-shared-ocean";
 var UNVERSIONED = ["net", "juice"];
 function versioned(table) {
   const out = {};
@@ -3969,6 +4095,7 @@ var Board = class {
   constructor(storage) {
     this.storage = storage;
   }
+  storage;
   rows = [];
   /** lowercased name -> hash of the claim that owns it. */
   owners = {};
@@ -4036,7 +4163,8 @@ var Board = class {
     if (!Number.isFinite(seed) || !Number.isFinite(claimed) || claimed <= 0) {
       return this.refuse("a run needs an ocean and a score");
     }
-    if (!Number.isFinite(aspect) || aspect < 0.2 || aspect > 5) return this.refuse("impossible window");
+    if (!Number.isFinite(aspect) || aspect < 0.2 || aspect > 5)
+      return this.refuse("impossible window");
     if (!inputLog || !boostLog) return this.refuse("no input log");
     if (inputLog.length === 0) return this.refuse("empty run");
     if (inputLog.length > MAX_STEPS) return this.refuse("run too long to check");
@@ -4142,7 +4270,7 @@ var Board = class {
 };
 
 // src/lib/build.ts
-var BUILD_ID = "r45-the-ocean-bites-back";
+var BUILD_ID = "r46-you-can-see-it-coming";
 
 // server/src/room.ts
 var TICK_MS = 50;
@@ -4155,6 +4283,8 @@ var ArenaRoom = class {
     void this.state;
     void this.env;
   }
+  state;
+  env;
   arena = new Arena(Date.now() >>> 0);
   clients = /* @__PURE__ */ new Map();
   timer = null;
