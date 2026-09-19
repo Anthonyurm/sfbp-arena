@@ -1124,12 +1124,47 @@ var TUNING = {
      */
     interpDelayMs: 120,
     /**
+     * THE ADAPTIVE INTERPOLATION DELAY. See `RemoteOcean.trackDelay`.
+     *
+     * `interpDelayMs` above is now only where the delay STARTS, before anything
+     * has been measured. From there it tracks one server tick plus
+     * `interpJitterK` standard deviations of the arrival gap, so a clean
+     * connection settles near 60-70ms instead of paying a flat 120 — and every
+     * millisecond taken off this is a millisecond off how long it takes to see
+     * another fish turn. A rough connection climbs by itself and a starve pins
+     * it at the ceiling.
+     *
+     * The floor is a shade over one tick: below that there is no future left to
+     * interpolate toward, whatever the jitter says. The ceiling is above the
+     * old constant so a genuinely bad connection is better off than it was.
+     * 2.5 sigma leaves roughly one arrival in a hundred to the starve path.
+     */
+    interpMinMs: 58,
+    interpMaxMs: 200,
+    interpJitterK: 2.5,
+    /** How fast the delay may move, ms of delay per second. Up fast, down slow. */
+    interpRiseMs: 400,
+    interpFallMs: 25,
+    /**
      * Beyond this, a snapshot is too old to interpolate from and the remote
      * ocean holds still rather than sliding fish across the screen.
      */
     maxExtrapolateMs: 250,
-    /** Input messages per second. The server ticks at 20; more is waste. */
-    inputHz: 20,
+    /**
+     * Input messages per second.
+     *
+     * This used to be 20, matched to the server's tick on the reasoning that
+     * more is waste. It is not waste: the two run on their own timers, so an
+     * input sent at 20Hz waits up to a full 50ms for a send slot BEFORE the
+     * network even sees it, and then up to another tick at the far end. Sending
+     * at 40 halves the first of those — about 12ms of pure latency, back, for
+     * an extra twenty messages a second of roughly forty bytes each. That is
+     * 800 bytes a second up, against the 25-50kB a second coming down.
+     *
+     * The server keeps only the newest input per player, so extra messages
+     * cost it nothing but the parse.
+     */
+    inputHz: 40,
     /**
      * What the server's broadcast interval is, in milliseconds. Used to take
      * the server's own waiting time out of a round-trip measurement — without
@@ -1137,6 +1172,12 @@ var TUNING = {
      * wrong instant.
      */
     serverTickMs: 50,
+    /**
+     * How often the client asks the arena for a bare round trip. A few times a
+     * second is plenty for a min-filtered figure, and the message is two dozen
+     * bytes — nothing next to a snapshot.
+     */
+    pingEverySeconds: 0.25,
     /**
      * Correction. The server's position for your own fish arrives ~1 RTT late,
      * so it is always slightly behind where prediction has you. Small errors
@@ -2168,7 +2209,9 @@ var Director = class _Director {
     for (let attempt = 0; attempt < 14; attempt++) {
       const angle = ctx.rng.range(0, TAU2);
       if (avoidForwardCone && ctx.runTime < d.graceMs / 1e3) {
-        const delta = Math.abs(atan2(sin(angle - ctx.pheading), cos(angle - ctx.pheading)));
+        const delta = Math.abs(
+          atan2(sin(angle - ctx.pheading), cos(angle - ctx.pheading))
+        );
         if (delta < d.graceCone) continue;
       }
       const r = ctx.viewHalfDiag * ctx.rng.range(d.spawnRing[0], d.spawnRing[1]);
@@ -2825,7 +2868,8 @@ var Arena = class {
       alive: true,
       causeOfDeath: "",
       justDied: false,
-      joinedAt: this.time
+      joinedAt: this.time,
+      viewHalfDiag: 0
     };
     this.players.set(id, entry);
     return entry;
@@ -2867,6 +2911,10 @@ var Arena = class {
   tick(dt) {
     this.time += dt;
     const alive = [...this.players.values()].filter((p) => p.alive);
+    for (const entry of alive) {
+      const vh = viewHeightFor(entry.player.mass);
+      entry.viewHalfDiag = hypot(vh * LIVE.camera.referenceAspect, vh) / 2;
+    }
     const biggest = alive.reduce((m, p) => Math.max(m, p.player.radius), 12);
     this.hash.setCellSize(Math.max(140, biggest * 2.4));
     this.hash.clear();
@@ -2891,12 +2939,14 @@ var Arena = class {
       this.ai.runTime = this.time;
       e.threat = ref ? Director.classify(e.mass, ref.mass) : Threat.Standoff;
       if (e.role === Role.Bird) e.threat = Threat.Lethal;
-      const dx = e.x - this.dir.camX;
-      const dy = e.y - this.dir.camY;
-      const range = this.dir.viewHalfDiag * LIVE.render.indicatorRange;
-      if (dx * dx + dy * dy < range * range) {
-        if (this.time - e.seen > 0.15) e.seenSince = this.time;
-        e.seen = this.time;
+      if (near) {
+        const dx = e.x - near.player.x;
+        const dy = e.y - near.player.y;
+        const range = near.viewHalfDiag * LIVE.render.indicatorRange;
+        if (dx * dx + dy * dy < range * range) {
+          if (this.time - e.seen > 0.15) e.seenSince = this.time;
+          e.seen = this.time;
+        }
       }
       stepEntity(e, this.ai);
       if (e.role !== Role.Bird) clampDepth(e, e.radius * 0.5);
@@ -2945,7 +2995,10 @@ var Arena = class {
         const edible = threat === Threat.Edible && e.role !== Role.Bird;
         if (edible) {
           const angle = Math.abs(
-            atan2(sin(atan2(dy, dx) - p.heading), cos(atan2(dy, dx) - p.heading))
+            atan2(
+              sin(atan2(dy, dx) - p.heading),
+              cos(atan2(dy, dx) - p.heading)
+            )
           );
           const hitR = (angle < eat.coneHalfAngle ? reach : mouth) + e.radius;
           if (d < hitR) {
@@ -3076,7 +3129,7 @@ var Arena = class {
     const entry = this.players.get(id);
     if (!entry) return null;
     const p = entry.player;
-    const range = Math.max(1400, p.radius * 60);
+    const range = snapshotRange(p.mass);
     const r2 = range * range;
     const fish = [];
     const items = this.pool.items;
@@ -3125,13 +3178,20 @@ var Arena = class {
         alive: entry.alive,
         banked: Math.round(entry.banked),
         score: p.score(entry.banked),
-        boosting: p.boostActive
+        boosting: p.boostActive,
+        chain: p.bestChain,
+        bites: p.bites
       },
       fish,
       players: others
     };
   }
 };
+function snapshotRange(mass) {
+  const vh = viewHeightFor(mass);
+  const diagonal = hypot(vh * LIVE.camera.referenceAspect, vh) / 2;
+  return Math.max(1400, diagonal * 2);
+}
 
 // src/lib/names.ts
 function normalizeForFilter(raw) {
@@ -3246,23 +3306,13 @@ var POOL = [
   },
   (rng) => {
     const n = rng.int(45, 80);
-    return {
-      id: "survive",
-      text: `survive ${n} seconds`,
-      target: n,
-      read: (p) => Math.floor(p.elapsed)
-    };
+    return { id: "survive", text: `survive ${n} seconds`, target: n, read: (p) => Math.floor(p.elapsed) };
   },
   (rng) => {
     const n = rng.int(120, 320);
     return { id: "size", text: `get to size ${n}`, target: n, read: (p) => Math.floor(p.peakMass) };
   },
-  () => ({
-    id: "frenzy",
-    text: "trigger a frenzy",
-    target: 1,
-    read: (p) => p.frenzy ? 1 : p.bestChain >= 10 ? 1 : 0
-  })
+  () => ({ id: "frenzy", text: "trigger a frenzy", target: 1, read: (p) => p.frenzy ? 1 : p.bestChain >= 10 ? 1 : 0 })
 ];
 function rollObjectives(rng, count = 3) {
   const picks = [];
@@ -3679,7 +3729,7 @@ var World = class {
     if (!p.alive) return;
     p.alive = false;
     p.causeOfDeath = cause;
-    this.events.push({ type: "death", stats: this.stats() });
+    this.events.push({ type: "death" });
   }
   stats() {
     const p = this.player;
@@ -3793,7 +3843,21 @@ function fnv1a(s) {
   return (h >>> 0).toString(36);
 }
 var SIM_REVISION = "r43-detmath";
-var SIM_VERSION = fnv1a(SIM_REVISION + "|" + JSON.stringify(LIVE));
+var UNVERSIONED = ["net", "juice"];
+function versioned(table) {
+  const out = {};
+  const skip = new Set(UNVERSIONED);
+  for (const key of Object.keys(table).sort()) {
+    if (skip.has(key)) continue;
+    out[key] = table[key];
+  }
+  return out;
+}
+var SIM_VERSION = fnv1a(SIM_REVISION + "|" + JSON.stringify(versioned(LIVE)));
+
+// src/lib/protocol.ts
+var PROTOCOL = 4;
+var BOARD_SIZE = 20;
 
 // src/lib/wire.ts
 var B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -3833,7 +3897,8 @@ function readLog(value) {
 }
 
 // server/src/board.ts
-var SIZE = 20;
+var BOARD_EPOCH = "r44-names-required";
+var SIZE = BOARD_SIZE;
 var MAX_STEPS = LIVE.run.inputLogSteps;
 var TOLERANCE = 0.02;
 var RATE_PER_MIN = 6;
@@ -3856,7 +3921,6 @@ var Board = class {
   constructor(storage) {
     this.storage = storage;
   }
-  storage;
   rows = [];
   /** lowercased name -> hash of the claim that owns it. */
   owners = {};
@@ -3875,6 +3939,16 @@ var Board = class {
   };
   async load() {
     if (this.loaded) return;
+    const epoch = await this.storage.get("epoch");
+    if (epoch !== BOARD_EPOCH) {
+      await this.storage.put("epoch", BOARD_EPOCH);
+      await this.storage.put("rows", []);
+      await this.storage.put("owners", {});
+      this.rows = [];
+      this.owners = {};
+      this.loaded = true;
+      return;
+    }
     const saved = await this.storage.get("rows");
     if (Array.isArray(saved)) this.rows = bestPerName(saved);
     const owners = await this.storage.get("owners");
@@ -3914,8 +3988,7 @@ var Board = class {
     if (!Number.isFinite(seed) || !Number.isFinite(claimed) || claimed <= 0) {
       return this.refuse("a run needs an ocean and a score");
     }
-    if (!Number.isFinite(aspect) || aspect < 0.2 || aspect > 5)
-      return this.refuse("impossible window");
+    if (!Number.isFinite(aspect) || aspect < 0.2 || aspect > 5) return this.refuse("impossible window");
     if (!inputLog || !boostLog) return this.refuse("no input log");
     if (inputLog.length === 0) return this.refuse("empty run");
     if (inputLog.length > MAX_STEPS) return this.refuse("run too long to check");
@@ -3997,7 +4070,22 @@ var Board = class {
     }
     await this.storage.put("rows", this.rows);
     const rank = this.rows.indexOf(row) + 1;
-    return { ok: rank > 0, rank, score: result.score, board: this.rows };
+    if (rank <= 0) {
+      const mine2 = this.rows.find((r) => r.name.toLowerCase() === name.toLowerCase());
+      this.counts.verified--;
+      if (mine2 && mine2.score >= result.score) {
+        this.counts.personalBest++;
+        return { ok: false, reason: "your best run is still your best run", board: this.rows };
+      }
+      this.counts.tooLow++;
+      return {
+        ok: false,
+        reason: "the board filled up while that run was being checked",
+        cutoff: this.cutoff(),
+        board: this.rows
+      };
+    }
+    return { ok: true, rank, score: result.score, board: this.rows };
   }
   refuse(reason) {
     this.counts.refused++;
@@ -4006,11 +4094,10 @@ var Board = class {
 };
 
 // src/lib/build.ts
-var BUILD_ID = "r43-same-maths-everywhere";
+var BUILD_ID = "r44-ping-and-bugs";
 
 // server/src/room.ts
 var TICK_MS = 50;
-var PROTOCOL = 3;
 var IDLE_SHUTDOWN_MS = 6e4;
 var MAX_PLAYERS = 40;
 var ArenaRoom = class {
@@ -4020,12 +4107,9 @@ var ArenaRoom = class {
     void this.state;
     void this.env;
   }
-  state;
-  env;
   arena = new Arena(Date.now() >>> 0);
   clients = /* @__PURE__ */ new Map();
   timer = null;
-  lastTick = Date.now();
   emptySince = Date.now();
   /** Diagnostics. Cheap, and the difference between a theory and an answer. */
   ticks = 0;
@@ -4109,6 +4193,8 @@ var ArenaRoom = class {
           this.arena.setInput(id, Number(msg.h), Boolean(msg.b), Number(msg.seq) || 0);
         } else if (msg.type === "respawn") {
           this.arena.respawn(id);
+        } else if (msg.type === "ping") {
+          entry?.ws.send(JSON.stringify({ type: "pong", t: msg.t }));
         }
       } catch {
       }
@@ -4145,14 +4231,12 @@ var ArenaRoom = class {
   }
   start() {
     if (this.timer) return;
-    this.lastTick = Date.now();
     this.timer = setInterval(() => this.tick(), TICK_MS);
   }
   tick() {
     const now = Date.now();
     const dt = TICK_MS / 1e3;
     this.ticks++;
-    this.lastTick = now;
     if (this.clients.size === 0) {
       if (now - this.emptySince > IDLE_SHUTDOWN_MS && this.timer) {
         clearInterval(this.timer);
@@ -4218,6 +4302,10 @@ function arenaNamespace(env) {
 function isNamespace(v) {
   return typeof v === "object" && v !== null && typeof v.idFromName === "function";
 }
+var HOME = "enam";
+function roomStub(arena, name) {
+  return arena.get(arena.idFromName(name), { locationHint: HOME });
+}
 var ROOMS = ["atlantic", "pacific", "coral", "kelp", "trench", "lagoon", "reef", "current"];
 var SOFT_CAP = 24;
 var HARD_CAP = 40;
@@ -4225,7 +4313,7 @@ async function pickRoom(arena) {
   const counts = await Promise.all(
     ROOMS.map(async (room) => {
       try {
-        const res = await arena.get(arena.idFromName(room)).fetch("https://arena/status");
+        const res = await roomStub(arena, room).fetch("https://arena/status");
         const body = await res.json();
         return { room, players: Number(body.players) || 0, build: String(body.build ?? "") };
       } catch {
@@ -4277,15 +4365,14 @@ var index_default = {
           }
         });
       }
-      return arena.get(arena.idFromName("leaderboard")).fetch(request);
+      return roomStub(arena, "leaderboard").fetch(request);
     }
     const match = url.pathname.match(/^\/room\/([a-z0-9-]{1,32})$/i);
     if (match) {
       if (!arena) {
         return json2({ error: "no durable object binding on this Worker" }, 503);
       }
-      const id = arena.idFromName(match[1].toLowerCase());
-      return arena.get(id).fetch(request);
+      return roomStub(arena, match[1].toLowerCase()).fetch(request);
     }
     return json2({ error: "not found", try: ["/health", "/join", "/board", "/room/atlantic"] }, 404);
   }
