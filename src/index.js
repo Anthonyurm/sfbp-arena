@@ -3945,7 +3945,7 @@ function readLog(value) {
 }
 
 // server/src/board.ts
-var BOARD_EPOCH = "r44-names-required";
+var BOARD_EPOCH = "r45-new-ocean";
 var SIZE = BOARD_SIZE;
 var MAX_STEPS = LIVE.run.inputLogSteps;
 var TOLERANCE = 0.02;
